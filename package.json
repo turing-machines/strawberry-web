@@ -1,0 +1,38 @@
+{
+  "name": "turborepo-bun-next-expo",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\"",
+    "check-types": "turbo run check-types",
+    "mobile:start": "turbo run start --filter=mobile",
+    "mobile:android": "turbo run android --filter=mobile",
+    "mobile:ios": "turbo run ios --filter=mobile",
+    "mobile:prebuild": "turbo run prebuild --filter=mobile",
+    "mobile:lint": "turbo run lint --filter=mobile"
+  },
+  "devDependencies": {
+    "babel-preset-expo": "~54.0.0",
+    "prettier": "^3.6.2",
+    "turbo": "^2.5.9-canary.7",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "bun@1.3.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "resolutions": {
+    "lightningcss": "1.30.1",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "dependencies": {
+    "expo": "~54.0.0"
+  }
+}
