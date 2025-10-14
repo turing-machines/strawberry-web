@@ -1,5 +1,8 @@
-import Image, { type ImageProps } from "next/image";
+"use client";
+
 import { Button } from "@repo/ui/button";
+import { ButtonDom } from "@repo/ui/button-dom";
+import Image, { type ImageProps } from "next/image";
 import styles from "./page.module.css";
 
 type Props = Omit<ImageProps, "src"> & {
@@ -96,6 +99,9 @@ export default function Home() {
           />
           Go to turborepo.com →
         </a>
+        <ButtonDom variant="primary" onPress={() => alert("Go clicked!")}>
+          Go
+        </ButtonDom>
       </footer>
     </div>
   );

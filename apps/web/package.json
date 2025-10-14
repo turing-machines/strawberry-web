@@ -17,11 +17,14 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@babel/preset-typescript": "^7.27.1",
     "@repo/eslint-config": "*",
     "@repo/typescript-config": "*",
     "@types/node": "^22.15.3",
     "@types/react": "19.1.0",
     "@types/react-dom": "19.1.1",
+    "autoprefixer": "^10.4.21",
+    "babel-loader": "^10.0.0",
     "eslint": "^9.34.0",
     "typescript": "5.9.2"
   }
