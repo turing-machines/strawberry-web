@@ -1,150 +1,112 @@
-# turborepo-bun-next-expo
+# Strawberry Web (Next.js client)
 
-A Turborepo monorepo featuring Next.js web and Expo React Native mobile applications with shared packages, powered by Bun.
+Next.js web client for Strawberry Server. Supports user authentication, listing recent chat messages, sending messages, and rendering assistant replies over WebSocket events.
 
-## What's inside?
+What's inside?
 
-This monorepo includes the following apps and packages:
+- Apps
+  - web: Next.js 15.5+ app (React 19, App Router, Turbopack)
+  - mobile: Expo React Native app (kept from template; optional)
+- Packages
+  - @repo/ui: shared UI components
+  - @repo/eslint-config and @repo/typescript-config
+  - @strawberry/shared: shared types (User, Message, HTTP/WS envelopes)
+  - @strawberry/api-client: HTTP client (auth, me, agent, chat send)
+  - @strawberry/ws-client: WebSocket client with reconnect + manual close
 
-### Apps
+Requirements
 
-- **web**: Next.js 15.5+ application with React 19, App Router, and Turbopack
-- **mobile**: Expo (v54) React Native app (v0.81.4) with React 19, Expo Router, and NativeWind
+- Node 20+
+- pnpm 9+ (via corepack)
+- Running Strawberry Server (HTTP :8080, WS :9002)
+  - Build/run per server docs:
+    - cmake -S . -B build -DDEBUG=ON && cmake --build build -j 4 && ./build/strawberry
+  - API reference: ~/strawberry-server/docs/APIv1.md
 
-### Packages
-
-- **@repo/ui**: Shared React component library (button, card, code components)
-- **@repo/eslint-config**: ESLint configurations (base, next-js, react-internal)
-- **@repo/typescript-config**: Shared TypeScript configurations
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-## Package Manager
-
-This project uses **Bun** (v1.3.0) as the package manager. Always use `bun` commands instead of npm/yarn/pnpm.
-
-## Getting Started
-
-### Installation
+Install
 
 ```bash
-bun install
+pnpm i
 ```
 
-### Development
+Runtime Config
 
-Run all apps in development mode:
+- apps/web/public/app-config.json
+
+```json
+{
+  "apiBaseUrl": "",
+  "wsUrl": "ws://localhost:9002/ws",
+  "releaseTag": "dev",
+  "minServerVersion": "1.0.0"
+}
+```
+
+- apiBaseUrl empty string means HTTP calls use same-origin and are proxied in dev by Next.js rewrites to http://localhost:8080, avoiding CORS.
+- WebSocket connects directly to wsUrl.
+
+Next.js Dev Proxy (HTTP only)
+
+- apps/web/next.config.js includes a dev rewrite:
+  - /v1/:path* → http://localhost:8080/v1/:path*
+- This keeps browser HTTP same-origin and avoids OPTIONS preflights.
+
+Develop
 
 ```bash
-bun dev
+# Run only web on port 3100
+pnpm --filter web dev
+
+# Or run all workspace dev scripts
+pnpm dev
+
+# Open the app
+http://localhost:3100
 ```
 
-Run specific apps:
+Build
 
 ```bash
-# Web app only (runs on port 3000)
-turbo dev --filter=web
-
-# Mobile app
-bun mobile:start
-
-# Or specific platform
-cd apps/mobile && bun ios
-cd apps/mobile && bun android
+pnpm --filter web build
 ```
 
-### Build
-
-Build all apps and packages:
+Start (prod)
 
 ```bash
-bun build
+pnpm --filter web start   # listens on 3100
 ```
 
-Build specific app:
+Features
 
-```bash
-# Web app only
-turbo build --filter=web
+- Auth
+  - Register: POST /v1/user/register {email,password,name?}
+  - Login: POST /v1/user/login {email,password}
+  - Token stored in localStorage and used for subsequent calls + WS
+- Chat
+  - Initial history via WS action get_messages (avoids HTTP session cookie requirement)
+  - New assistant replies via WS event new_message
+  - Send message via HTTP POST /v1/conversations/messages {content}; ack is HTTP, assistant reply arrives via WS
+  - WS client auto‑reconnects with backoff and stops on manual close
 
-# Mobile app prebuild
-cd apps/mobile && bun prebuild
-```
+Key files
 
-### Code Quality
+- apps/web/app/page.tsx: login/register
+- apps/web/app/chat/page.tsx: chat view (WS get_messages + new_message)
+- apps/web/lib/config.ts: load app-config.json
+- apps/web/lib/sdk.ts: binds API + WS with token
+- packages/shared/src/index.ts: shared types
+- packages/api-client/src: HTTP client
+- packages/ws-client/src: WebSocket client
 
-```bash
-# Lint all packages
-bun lint
+Troubleshooting
 
-# Type checking
-bun check-types
+- Port 3000 busy: web runs on 3100 to avoid conflicts with local SSE services.
+- Multiple WS connections in dev: guarded by a StrictMode-safe ref and cleanup.
+- 401 on /v1/conversations/messages: expected if using HTTP without a session cookie; this client uses WS get_messages for history.
 
-# Format code
-bun format
+Done criteria
 
-# Mobile app linting
-bun mobile:lint
-```
-
-## Key Architecture Details
-
-### Mobile App Features
-
-- **Expo Router (v6)**: File-based routing for navigation
-- **NativeWind**: Tailwind CSS styling in React Native
-- **React Native Worklets**: For performant animations with Reanimated v4
-- **Nested Git Repository**: Mobile app has its own `.git` directory
-
-### Monorepo Configuration
-
-- **Hoisted Node Linker**: Configured in `.npmrc` for React Native compatibility
-- **Metro Bundler**: Resolves modules from workspace root (`../../node_modules`)
-- **Watch Folders**: Mobile app watches entire monorepo for changes
-- **Package Exports**: Shared UI package uses individual component exports pattern
-
-### Shared UI Package
-
-Import components using:
-
-```typescript
-import { Button } from "@repo/ui/button";
-import { Card, CardHeader } from "@repo/ui/card";
-import { Code } from "@repo/ui/code";
-```
-
-Generate new components:
-
-```bash
-cd packages/ui
-bun generate:component
-```
-
-## Tech Stack
-
-- **Runtime**: Bun 1.3.0
-- **Monorepo**: Turborepo
-- **Web**: Next.js 15.5+, React 19, Turbopack
-- **Mobile**: Expo 54, React Native 0.81.4, React 19
-- **Styling**: Tailwind CSS (web), NativeWind (mobile)
-- **Type Checking**: TypeScript
-- **Linting**: ESLint
-- **Formatting**: Prettier
-
-## Important Notes
-
-- The mobile app is a nested Git repository - be careful with Git operations
-- Always respect the hoisted node-linker configuration for React Native compatibility
-- Metro bundler resolves packages from monorepo root
-- Package resolution for `lightningcss` is pinned at version 1.30.1
-
-## Useful Links
-
-Learn more about the technologies used:
-
-- [Turborepo Documentation](https://turborepo.com/docs)
-- [Bun Documentation](https://bun.sh/docs)
-- [Next.js Documentation](https://nextjs.org/docs)
-- [Expo Documentation](https://docs.expo.dev/)
-- [React Native Documentation](https://reactnative.dev/docs/getting-started)
-- [NativeWind Documentation](https://www.nativewind.dev/)
+- Register/login persists token
+- Recent messages load and render
+- Sending a message updates UI and assistant reply is appended via WS
+- WS reconnects if dropped

@@ -1,36 +1,39 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/create-next-app).
+# Strawberry Web (apps/web)
 
-## Getting Started
+Next.js client for Strawberry Server (auth, chat history via WS get_messages, send via HTTP, assistant replies via WS events).
 
-First, run the development server:
+Run
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# From repo root
+pnpm --filter web dev
+# open http://localhost:3100
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Runtime config
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- apps/web/public/app-config.json
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load Inter, a custom Google Font.
+```json
+{
+  "apiBaseUrl": "",
+  "wsUrl": "ws://localhost:9002/ws",
+  "releaseTag": "dev",
+  "minServerVersion": "1.0.0"
+}
+```
 
-## Learn More
+Dev proxy
 
-To learn more about Next.js, take a look at the following resources:
+- apps/web/next.config.js rewrites /v1/* → http://localhost:8080/v1/* so HTTP is same‑origin in dev and avoids CORS preflights. WS connects directly using wsUrl.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Endpoints used
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Auth: POST /v1/user/register, POST /v1/user/login
+- Chat (HTTP): POST /v1/conversations/messages
+- Chat (WS): action get_messages, event new_message
 
-## Deploy on Vercel
+Notes
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Dev server runs on port 3100 to avoid conflicts.
+- WS connections are guarded to prevent duplicates in React Strict Mode.
