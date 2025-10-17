@@ -7,6 +7,7 @@
     "lint": "turbo run lint",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
+    "typecheck": "turbo run typecheck",
     "mobile:start": "turbo run start --filter=mobile",
     "mobile:android": "turbo run android --filter=mobile",
     "mobile:ios": "turbo run ios --filter=mobile",
@@ -22,7 +23,7 @@
   "engines": {
     "node": ">=18"
   },
-  "packageManager": "bun@1.3.0",
+  "packageManager": "pnpm@9.12.0",
   "workspaces": [
     "apps/*",
     "packages/*"

@@ -1,0 +1,6 @@
+{
+  "apiBaseUrl": "",
+  "wsUrl": "ws://localhost:9002/ws",
+  "releaseTag": "dev",
+  "minServerVersion": "1.0.0"
+}

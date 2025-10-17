@@ -60,6 +60,14 @@ function withReactStrictDOM(nextConfig) {
 
 const nextConfig = {
   transpilePackages: ["react-strict-dom"],
+  async rewrites() {
+    return [
+      {
+        source: "/v1/:path*",
+        destination: "http://localhost:8080/v1/:path*",
+      },
+    ];
+  },
 };
 
 export default withReactStrictDOM(nextConfig);
