@@ -6,9 +6,28 @@ import { tokenStore } from '@/lib/auth';
 import type { Message, WsResponse } from '@strawberry/shared';
 import { rid } from '@/lib/id';
 
+// Paging + UI constants
+const PAGE_SIZE = 20;
+const SCROLL_NEAR_BOTTOM_PX = 80;
+const TYPING_TIMEOUT_MS = 30_000;
+
+// Expected WS data shape for get_messages
+type GetMessagesData = { messages: Message[]; has_more: boolean; next_cursor: number };
+
+// Stable key helpers to avoid React index-key issues when prepending pages
+const hash = (s: string) => {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h.toString(36);
+};
+const messageKey = (m: Message) => `${m.created_at}:${m.role}:${hash(m.content)}`;
+
 export default function Chat() {
   const [cfg, setCfg] = useState<any>();
   const [messages, setMessages] = useState<Message[]>([]);
+  const [oldestCursor, setOldestCursor] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [isLoadingPage, setIsLoadingPage] = useState(false);
   const [content, setContent] = useState('');
   const [status, setStatus] = useState('connecting…');
   const wsRef = useRef<any>(null);
@@ -16,73 +35,223 @@ export default function Chat() {
   const [typing, setTyping] = useState(false);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
+  const topRef = useRef<HTMLDivElement | null>(null);
+  const shouldScrollBottomRef = useRef(true);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  // Refs to avoid stale state inside IntersectionObserver
+  const hasMoreRef = useRef(true);
+  const loadingRef = useRef(false);
+  const boundaryRetriedRef = useRef(false);
+  const [pagingEnabled, setPagingEnabled] = useState(false);
 
   useEffect(() => {
     loadConfig().then(setCfg).catch(() => {});
   }, []);
 
-  // Always keep the latest content/typing in view within the scroll container
+  useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
+  useEffect(() => { loadingRef.current = isLoadingPage; }, [isLoadingPage]);
+
+  // Auto-scroll selectively: stick to bottom on send/assistant reply or if already near bottom
   useEffect(() => {
-    try {
-      const el = listRef.current;
-      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
-    } catch {}
+    const el = listRef.current;
+    if (!el) return;
+    const should = shouldScrollBottomRef.current;
+    const nearBottom = el.scrollHeight - el.clientHeight - el.scrollTop < SCROLL_NEAR_BOTTOM_PX;
+    if (should || nearBottom || typing) {
+      const behavior: ScrollBehavior = should ? 'auto' : 'smooth';
+      // Wait for DOM to paint messages before scrolling
+      requestAnimationFrame(() => {
+        try { bottomRef.current?.scrollIntoView({ behavior, block: 'end' }); } catch {}
+        shouldScrollBottomRef.current = false;
+      });
+    }
   }, [messages, typing]);
 
   useEffect(() => {
     if (!cfg) return;
     if (startedRef.current) return; // guard double-mount in React StrictMode
     const sdk = createSdk(cfg);
-    // Connect WS and fetch initial messages via WS action
     const ws = (wsRef.current = sdk.ws());
-    const reqId = rid();
-    const offGet = ws.on('get_messages', (resp: WsResponse<{ messages: Message[] }>) => {
-      if (resp?.type === 'response' && resp.request_id === reqId) {
-        if ((resp as any).status_code === 0) {
-          const data = (resp as any).data || {};
-          setMessages((data as any).messages || []);
+
+    const requestGetMessages = <T extends object>(data: T, handler: (resp: WsResponse<GetMessagesData>) => void) => {
+      const reqId = rid();
+      const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
+        if (resp?.type === 'response' && resp.request_id === reqId) {
+          off();
+          handler(resp);
         }
-        offGet();
-      }
-    });
+      });
+      try { ws.send('get_messages', data as any, reqId); } catch { off(); }
+      return off;
+    };
+
     ws.connect()
       .then(() => {
         setStatus('connected');
-        try { ws.send('get_messages', { count: 20 } as any, reqId); } catch {}
+        requestGetMessages({ count: PAGE_SIZE }, (resp) => {
+          if (resp.status_code === 0) {
+            const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: 0 };
+            const initial = (data.messages || []).slice();
+            setOldestCursor((data.next_cursor as number) ?? null);
+            setHasMore(!!data.has_more);
+            hasMoreRef.current = !!data.has_more;
+            boundaryRetriedRef.current = false;
+            // Initial render: set exactly what server returned and scroll to bottom
+            shouldScrollBottomRef.current = true;
+            setMessages(initial);
+          }
+        });
       })
       .catch((e: any) => setStatus('error ' + e.message));
+
     const off = ws.on('new_message', (evt: any) => {
       const m = evt?.data?.message;
       if (m && m.role === 'assistant') {
         setTyping(false);
         if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
-        setMessages((prev) => [...prev, m]);
+        shouldScrollBottomRef.current = true;
+        // Append assistant reply safely even if initial page arrives slightly later
+        setMessages((prev) => {
+          // If message already present (dedupe), don't duplicate
+          const k = messageKey(m as Message);
+          if (prev.find((x) => messageKey(x) === k)) return prev;
+          return [...prev, m as Message];
+        });
       }
     });
     startedRef.current = true;
     return () => {
       off && off();
-      offGet && offGet();
       if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
       try { wsRef.current?.close?.(); } catch {}
       startedRef.current = false;
     };
   }, [cfg]);
 
+  // Enable paging only after user scrolls near top once
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const onScroll = () => {
+      if (el.scrollTop < 24) setPagingEnabled(true);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => el.removeEventListener('scroll', onScroll);
+  }, []);
+
+  // Infinite scroll: observe the top sentinel and request older pages via WS
+  useEffect(() => {
+    const root = listRef.current;
+    const sentinel = topRef.current;
+    if (!root || !sentinel) return;
+    const ws = wsRef.current;
+    if (!ws) return;
+    if (!pagingEnabled) return; // wait until user scrolls near top
+    if (oldestCursor === null) return; // don't start paging until initial cursor is known
+
+    let blocked = false;
+    const io = new IntersectionObserver(
+      (entries) => {
+        const [e] = entries;
+        if (!e || !e.isIntersecting) return;
+        if (blocked) return;
+        if (!hasMoreRef.current || loadingRef.current) return;
+        blocked = true;
+        // Pause observing during a load to prevent rapid re-fires while sentinel stays visible
+        try { io.unobserve(sentinel); } catch {}
+        // Load older page
+        const el = listRef.current!;
+        const prevScrollHeight = el.scrollHeight;
+        const prevScrollTop = el.scrollTop;
+        setIsLoadingPage(true);
+
+        const handleResponse = (resp: WsResponse<GetMessagesData>) => {
+          if (resp.status_code !== 0) { setIsLoadingPage(false); return; }
+          const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
+          const pageMsgs: Message[] = data.messages || [];
+
+          // Do not auto-stick to bottom when prepending
+          shouldScrollBottomRef.current = false;
+          if (pageMsgs.length) {
+            setMessages((prev) => {
+              // Dedupe by composite key
+              const seen = new Set<string>();
+              const hash = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h.toString(36); };
+              const key = (m: Message) => `${m.created_at}:${m.role}:${hash(m.content)}`;
+              const merged = [...pageMsgs, ...prev];
+              const out: Message[] = [];
+              for (const m of merged) { const k = key(m); if (!seen.has(k)) { seen.add(k); out.push(m); } }
+              return out;
+            });
+
+            setOldestCursor((data.next_cursor ?? oldestCursor) as number | null);
+            const more = !!data.has_more;
+            hasMoreRef.current = more;
+            setHasMore(more);
+            boundaryRetriedRef.current = false;
+
+            // Preserve scroll position
+            requestAnimationFrame(() => {
+              const newScrollHeight = el.scrollHeight;
+              const delta = newScrollHeight - prevScrollHeight;
+              el.scrollTop = prevScrollTop + delta;
+            });
+            setIsLoadingPage(false);
+            blocked = false;
+            // Resume observing after load completes
+            try { io.observe(sentinel); } catch {}
+            return;
+          }
+
+          // Boundary retry: if server returned 0 but previously indicated has_more, try before-1 once
+          if (!data.has_more && hasMoreRef.current && oldestCursor && !boundaryRetriedRef.current) {
+            boundaryRetriedRef.current = true;
+            const reqId2 = rid();
+            const off2 = ws.on('get_messages', (resp2: WsResponse<GetMessagesData>) => {
+              if (resp2?.type === 'response' && resp2.request_id === reqId2) {
+                off2();
+                handleResponse(resp2);
+              }
+            });
+            try { ws.send('get_messages', { count: PAGE_SIZE, before: (oldestCursor as number) - 1 } as any, reqId2); } catch { off2(); setIsLoadingPage(false); }
+            return;
+          }
+          const more = !!data.has_more;
+          hasMoreRef.current = more;
+          setHasMore(more);
+          boundaryRetriedRef.current = false;
+          setIsLoadingPage(false);
+          blocked = false;
+          try { io.observe(sentinel); } catch {}
+        };
+
+        const reqId = rid();
+        const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
+          if (resp?.type === 'response' && resp.request_id === reqId) { off(); handleResponse(resp); }
+        });
+        try { ws.send('get_messages', { count: PAGE_SIZE, before: oldestCursor as number } as any, reqId); } catch { off(); setIsLoadingPage(false); }
+      },
+      { root, threshold: 0, rootMargin: '0px 0px -90% 0px' }
+    );
+    io.observe(sentinel);
+    return () => io.disconnect();
+  }, [pagingEnabled, oldestCursor]);
+
   const send = async (e: any) => {
     e.preventDefault();
     if (!content.trim()) return;
     // Optimistic user message
+    shouldScrollBottomRef.current = true;
     setMessages((prev) => [...prev, { role: 'user', name: 'owner', content, created_at: Date.now() }]);
     const toSend = content;
     setContent('');
     try {
       const sdk = createSdk(cfg);
-      const ack = await sdk.api.sendMessage(toSend);
-      if (ack && (ack as any).status === 'accepted') {
+      const ack: { status: string; stream: boolean } = await sdk.api.sendMessage(toSend);
+      if (ack && ack.status === 'accepted') {
         setTyping(true);
         if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-        typingTimerRef.current = setTimeout(() => setTyping(false), 30000);
+        typingTimerRef.current = setTimeout(() => setTyping(false), TYPING_TIMEOUT_MS);
       }
     } catch {}
   };
@@ -100,10 +269,11 @@ export default function Chat() {
         <small className="text-muted-foreground">{status}</small>
       </div>
       <div ref={listRef} className="border border-border rounded-md p-3 flex-1 overflow-auto mb-3 bg-card text-card-foreground space-y-2">
-        {messages.map((m, i) => {
+        <div ref={topRef} className="h-px -mt-px" />
+        {messages.map((m) => {
           const isUser = m.role === 'user';
           return (
-            <div key={i} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+            <div key={messageKey(m)} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
               <div
                 className={
                   (isUser
@@ -124,6 +294,7 @@ export default function Chat() {
             </div>
           </div>
         )}
+        <div ref={bottomRef} className="h-px" />
       </div>
       <form onSubmit={send} className="flex gap-2">
         <input
