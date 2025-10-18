@@ -34,43 +34,41 @@ export default function Home() {
   };
 
   return (
-    <div style={{ maxWidth: 360, margin: '40px auto', fontFamily: 'sans-serif' }}>
-      <h2>{mode === 'login' ? 'Login' : 'Register'}</h2>
-      <form onSubmit={submit}>
+    <div className="max-w-sm mx-auto mt-10">
+      <h2 className="text-xl font-semibold mb-3">{mode === 'login' ? 'Login' : 'Register'}</h2>
+      <form onSubmit={submit} className="space-y-2">
         <input
           placeholder="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          style={{ width: '100%', marginBottom: 8, padding: 8 }}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         />
-        <br />
         <input
           placeholder="password"
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
-          style={{ width: '100%', marginBottom: 8, padding: 8 }}
+          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         />
-        <br />
         {mode === 'register' && (
           <input
             placeholder="name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            style={{ width: '100%', marginBottom: 8, padding: 8 }}
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
           />
         )}
-        <button type="submit" style={{ padding: '8px 12px' }}>
+        <button type="submit" className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm hover:opacity-90">
           {mode === 'login' ? 'Login' : 'Register'}
         </button>
       </form>
       <button
         onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
-        style={{ marginTop: 8 }}
+        className="mt-2 text-sm text-primary hover:underline"
       >
         Switch to {mode === 'login' ? 'register' : 'login'}
       </button>
-      <div style={{ color: 'crimson', marginTop: 8 }}>{msg}</div>
+      <div className="text-red-600 mt-2 text-sm">{msg}</div>
     </div>
   );
 }

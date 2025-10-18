@@ -2,6 +2,7 @@ const dev = process.env.NODE_ENV !== "production";
 
 export default {
   plugins: {
+    tailwindcss: {},
     "react-strict-dom/postcss-plugin": {
       include: [
         "./app/**/*.{js,jsx,ts,tsx}",

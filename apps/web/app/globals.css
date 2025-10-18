@@ -1,13 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Catppuccin Latte (light) */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #eff1f5; /* base */
+  --foreground: #4c4f69; /* text */
+  --muted: #ccd0da; /* surface1 */
+  --muted-foreground: #6c6f85; /* subtext1 */
+  --border: #ccd0da; /* surface1 */
+  --input: #ccd0da;
+  --primary: #1e66f5; /* blue */
+  --primary-foreground: #eff1f5; /* base */
+  --secondary: #7287fd; /* lavender */
+  --secondary-foreground: #eff1f5;
+  --accent: #e6e9ef; /* surface0 */
+  --accent-foreground: #4c4f69;
+  --destructive: #d20f39; /* red */
+  --destructive-foreground: #eff1f5;
+  --surface: #e6e9ef; /* surface0 */
+  --card: #ffffff; /* near white */
+  --card-foreground: #4c4f69;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Catppuccin Mocha (dark) */
+.dark {
+  --background: #1e1e2e; /* base */
+  --foreground: #cdd6f4; /* text */
+  --muted: #45475a; /* surface1 */
+  --muted-foreground: #a6adc8; /* subtext0 */
+  --border: #45475a; /* surface1 */
+  --input: #45475a;
+  --primary: #89b4fa; /* blue */
+  --primary-foreground: #11111b; /* crust */
+  --secondary: #b4befe; /* lavender */
+  --secondary-foreground: #11111b;
+  --accent: #313244; /* surface0 */
+  --accent-foreground: #cdd6f4;
+  --destructive: #f38ba8; /* red */
+  --destructive-foreground: #11111b;
+  --surface: #313244; /* surface0 */
+  --card: #181825; /* mantle */
+  --card-foreground: #cdd6f4;
 }
 
 html,
@@ -16,10 +50,7 @@ body {
   overflow-x: hidden;
 }
 
-body {
-  color: var(--foreground);
-  background: var(--background);
-}
+body { @apply bg-background text-foreground; }
 
 * {
   box-sizing: border-box;

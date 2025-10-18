@@ -94,31 +94,33 @@ export default function Chat() {
   if (!cfg) return <div>Loading…</div>;
 
   return (
-    <div style={{ maxWidth: 720, margin: '20px auto', fontFamily: 'sans-serif' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <h2>Chat</h2>
-        <small>{status}</small>
+    <div className="max-w-3xl mx-auto p-5">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-xl font-semibold">Chat</h2>
+        <small className="text-muted-foreground">{status}</small>
       </div>
-      <div ref={listRef} style={{ border: '1px solid #ccc', padding: 12, height: 400, overflow: 'auto', marginBottom: 12 }}>
+      <div ref={listRef} className="border border-border rounded-md p-3 h-[400px] overflow-auto mb-3 bg-card text-card-foreground space-y-2">
         {messages.map((m, i) => (
-          <div key={i} style={{ marginBottom: 8 }}>
-            <strong>{m.role === 'assistant' ? 'assistant' : 'you'}:</strong> {m.content}
+          <div key={i} className="text-sm">
+            <strong className="mr-1">{m.role === 'assistant' ? 'assistant' : 'you'}:</strong> {m.content}
           </div>
         ))}
         {typing && (
-          <div style={{ marginBottom: 8 }}>
-            <strong>assistant:</strong> <TypingIndicator />
+          <div className="text-sm">
+            <strong className="mr-1">assistant:</strong> <TypingIndicator />
           </div>
         )}
       </div>
-      <form onSubmit={send} style={{ display: 'flex', gap: 8 }}>
+      <form onSubmit={send} className="flex gap-2">
         <input
           value={content}
           onChange={(e) => setContent(e.target.value)}
           placeholder="Type a message…"
-          style={{ flex: 1 }}
+          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         />
-        <button type="submit">Send</button>
+        <button type="submit" className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm hover:opacity-90">
+          Send
+        </button>
       </form>
     </div>
   );
