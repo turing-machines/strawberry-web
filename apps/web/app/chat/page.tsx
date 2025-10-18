@@ -15,10 +15,19 @@ export default function Chat() {
   const startedRef = useRef(false);
   const [typing, setTyping] = useState(false);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     loadConfig().then(setCfg).catch(() => {});
   }, []);
+
+  // Always keep the latest content/typing in view within the scroll container
+  useEffect(() => {
+    try {
+      const el = listRef.current;
+      if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    } catch {}
+  }, [messages, typing]);
 
   useEffect(() => {
     if (!cfg) return;
@@ -90,7 +99,7 @@ export default function Chat() {
         <h2>Chat</h2>
         <small>{status}</small>
       </div>
-      <div style={{ border: '1px solid #ccc', padding: 12, height: 400, overflow: 'auto', marginBottom: 12 }}>
+      <div ref={listRef} style={{ border: '1px solid #ccc', padding: 12, height: 400, overflow: 'auto', marginBottom: 12 }}>
         {messages.map((m, i) => (
           <div key={i} style={{ marginBottom: 8 }}>
             <strong>{m.role === 'assistant' ? 'assistant' : 'you'}:</strong> {m.content}
