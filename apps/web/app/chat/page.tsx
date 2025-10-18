@@ -107,8 +107,8 @@ export default function Chat() {
               <div
                 className={
                   (isUser
-                    ? 'bg-primary text-primary-foreground'
-                    : 'bg-accent text-accent-foreground border border-border') +
+                    ? 'bg-primary text-primary-foreground rounded-tr-none'
+                    : 'bg-accent text-accent-foreground border border-border rounded-tl-none') +
                   ' rounded-2xl px-3 py-2 text-sm max-w-[75%] whitespace-pre-wrap break-words'
                 }
               >
@@ -119,7 +119,7 @@ export default function Chat() {
         })}
         {typing && (
           <div className="flex justify-start">
-            <div className="bg-accent text-accent-foreground border border-border rounded-2xl px-3 py-2 text-sm max-w-[75%]">
+            <div className="bg-accent text-accent-foreground border border-border rounded-2xl rounded-tl-none px-3 py-2 text-sm max-w-[75%]">
               <TypingIndicator />
             </div>
           </div>
