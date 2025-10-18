@@ -94,20 +94,34 @@ export default function Chat() {
   if (!cfg) return <div>Loading…</div>;
 
   return (
-    <div className="max-w-3xl mx-auto p-5">
+    <div className="max-w-3xl mx-auto p-5 h-[100svh] flex flex-col overflow-hidden">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-xl font-semibold">Chat</h2>
         <small className="text-muted-foreground">{status}</small>
       </div>
-      <div ref={listRef} className="border border-border rounded-md p-3 h-[400px] overflow-auto mb-3 bg-card text-card-foreground space-y-2">
-        {messages.map((m, i) => (
-          <div key={i} className="text-sm">
-            <strong className="mr-1">{m.role === 'assistant' ? 'assistant' : 'you'}:</strong> {m.content}
-          </div>
-        ))}
+      <div ref={listRef} className="border border-border rounded-md p-3 flex-1 overflow-auto mb-3 bg-card text-card-foreground space-y-2">
+        {messages.map((m, i) => {
+          const isUser = m.role === 'user';
+          return (
+            <div key={i} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+              <div
+                className={
+                  (isUser
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-accent text-accent-foreground border border-border') +
+                  ' rounded-2xl px-3 py-2 text-sm max-w-[75%] whitespace-pre-wrap break-words'
+                }
+              >
+                {m.content}
+              </div>
+            </div>
+          );
+        })}
         {typing && (
-          <div className="text-sm">
-            <strong className="mr-1">assistant:</strong> <TypingIndicator />
+          <div className="flex justify-start">
+            <div className="bg-accent text-accent-foreground border border-border rounded-2xl px-3 py-2 text-sm max-w-[75%]">
+              <TypingIndicator />
+            </div>
           </div>
         )}
       </div>
