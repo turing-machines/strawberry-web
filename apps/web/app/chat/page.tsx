@@ -13,6 +13,8 @@ export default function Chat() {
   const [status, setStatus] = useState('connecting…');
   const wsRef = useRef<any>(null);
   const startedRef = useRef(false);
+  const [typing, setTyping] = useState(false);
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     loadConfig().then(setCfg).catch(() => {});
@@ -42,12 +44,17 @@ export default function Chat() {
       .catch((e: any) => setStatus('error ' + e.message));
     const off = ws.on('new_message', (evt: any) => {
       const m = evt?.data?.message;
-      if (m && m.role === 'assistant') setMessages((prev) => [...prev, m]);
+      if (m && m.role === 'assistant') {
+        setTyping(false);
+        if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
+        setMessages((prev) => [...prev, m]);
+      }
     });
     startedRef.current = true;
     return () => {
       off && off();
       offGet && offGet();
+      if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
       try { wsRef.current?.close?.(); } catch {}
       startedRef.current = false;
     };
@@ -62,7 +69,12 @@ export default function Chat() {
     setContent('');
     try {
       const sdk = createSdk(cfg);
-      await sdk.api.sendMessage(toSend);
+      const ack = await sdk.api.sendMessage(toSend);
+      if (ack && (ack as any).status === 'accepted') {
+        setTyping(true);
+        if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = setTimeout(() => setTyping(false), 30000);
+      }
     } catch {}
   };
 
@@ -84,6 +96,11 @@ export default function Chat() {
             <strong>{m.role === 'assistant' ? 'assistant' : 'you'}:</strong> {m.content}
           </div>
         ))}
+        {typing && (
+          <div style={{ marginBottom: 8 }}>
+            <strong>assistant:</strong> <TypingIndicator />
+          </div>
+        )}
       </div>
       <form onSubmit={send} style={{ display: 'flex', gap: 8 }}>
         <input
@@ -95,5 +112,26 @@ export default function Chat() {
         <button type="submit">Send</button>
       </form>
     </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <span className="typing-ind">
+      <span className="bubble" />
+      <span className="bubble" />
+      <span className="bubble" />
+      <style jsx>{`
+        .typing-ind { display: inline-flex; gap: 6px; align-items: flex-end; margin-left: 6px; }
+        .bubble { width: 8px; height: 8px; border-radius: 50%; background: #888; opacity: 0.85; animation: bounce 1.1s infinite ease-in-out; }
+        .bubble:nth-child(1) { animation-delay: 0s; }
+        .bubble:nth-child(2) { animation-delay: 0.15s; }
+        .bubble:nth-child(3) { animation-delay: 0.30s; }
+        @keyframes bounce {
+          0%, 80%, 100% { transform: translateY(0); opacity: 0.6; }
+          40% { transform: translateY(-6px); opacity: 1; }
+        }
+      `}</style>
+    </span>
   );
 }
