@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { loadConfig } from '@/lib/config';
+import { useRouter } from 'next/navigation';
 import { createSdk } from '@/lib/sdk';
 import { tokenStore } from '@/lib/auth';
 import type { Message, WsResponse } from '@strawberry/shared';
@@ -24,6 +25,7 @@ const messageKey = (m: Message) => `${m.created_at}:${m.role}:${hash(m.content)}
 
 export default function Chat() {
   const [cfg, setCfg] = useState<any>();
+  const [mounted, setMounted] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [oldestCursor, setOldestCursor] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(true);
@@ -44,6 +46,19 @@ export default function Chat() {
   const [pagingEnabled, setPagingEnabled] = useState(false);
   
   // Helper: stable message key
+  // Debug logging helper (temporary): prints which messages were returned from server
+  const logPage = (label: string, msgs: Message[]) => {
+    try {
+      const rows = (msgs || []).map((m, i) => ({
+        idx: i,
+        created_at: m.created_at,
+        role: m.role,
+        content: m.content.length > 80 ? m.content.slice(0, 80) + '…' : m.content,
+      }));
+      // eslint-disable-next-line no-console
+      console.log(`[Chat] ${label} page (count=${msgs?.length ?? 0})`, rows);
+    } catch {}
+  };
 
   // Load older messages (one page) when near top
   const loadOlder = () => {
@@ -68,6 +83,7 @@ export default function Chat() {
         if (resp.status_code !== 0) { loadingRef.current = false; setIsLoadingPage(false); return; }
         const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
         const pageMsgs = data.messages || [];
+        if (pageMsgs.length) logPage('older get_messages', pageMsgs);
 
         if (pageMsgs.length) {
           shouldScrollBottomRef.current = false;
@@ -143,8 +159,18 @@ export default function Chat() {
     try { ws.send('get_messages', { count: PAGE_SIZE, before: oldestCursor as number } as any, reqId); } catch { off(); loadingRef.current = false; setIsLoadingPage(false); }
   };
 
+  const router = useRouter();
+
+  // Ensure consistent SSR/CSR markup and handle auth + config on mount only
   useEffect(() => {
+    setMounted(true);
+    const t = tokenStore.get();
+    if (!t) {
+      router.replace('/');
+      return;
+    }
     loadConfig().then(setCfg).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
@@ -191,6 +217,7 @@ export default function Chat() {
           if (resp.status_code === 0) {
             const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: 0 };
             const initial = (data.messages || []).slice();
+            logPage('initial get_messages', initial);
             setOldestCursor((data.next_cursor as number) ?? null);
             setHasMore(!!data.has_more);
             hasMoreRef.current = !!data.has_more;
@@ -261,11 +288,7 @@ export default function Chat() {
     } catch {}
   };
 
-  if (!tokenStore.get()) {
-    if (typeof window !== 'undefined') location.href = '/';
-    return <div />;
-  }
-  if (!cfg) return <div>Loading…</div>;
+  if (!mounted || !cfg) return <div>Loading…</div>;
 
   return (
     <div className="max-w-3xl mx-auto p-5 h-[100svh] flex flex-col overflow-hidden">
