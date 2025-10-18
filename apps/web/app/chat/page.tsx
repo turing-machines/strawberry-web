@@ -11,6 +11,7 @@ import { rid } from '@/lib/id';
 const PAGE_SIZE = 20;
 const SCROLL_NEAR_BOTTOM_PX = 80;
 const TYPING_TIMEOUT_MS = 30_000;
+const CLOCK_DRIFT_MS = 2_000;
 
 // Expected WS data shape for get_messages
 type GetMessagesData = { messages: Message[]; has_more: boolean; next_cursor: number };
@@ -34,8 +35,9 @@ export default function Chat() {
   const [status, setStatus] = useState('connecting…');
   const wsRef = useRef<any>(null);
   const startedRef = useRef(false);
-  const [typing, setTyping] = useState(false);
-  const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const [activeAgentId, setActiveAgentId] = useState<number | null>(null);
+  const [typingByAgent, setTypingByAgent] = useState<Record<number, number>>({});
+  const typingTimersRef = useRef<Map<number, NodeJS.Timeout>>(new Map());
   const listRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollBottomRef = useRef(true);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -44,21 +46,12 @@ export default function Chat() {
   const loadingRef = useRef(false);
   const boundaryRetriedRef = useRef(false);
   const [pagingEnabled, setPagingEnabled] = useState(false);
+  // Timestamp of the most recent assistant reply we've rendered
+  const lastAssistantTsRef = useRef<number>(0);
+  // Timestamp of the most recent user message we initiated (optimistic send)
+  const lastUserTsRef = useRef<number>(0);
   
   // Helper: stable message key
-  // Debug logging helper (temporary): prints which messages were returned from server
-  const logPage = (label: string, msgs: Message[]) => {
-    try {
-      const rows = (msgs || []).map((m, i) => ({
-        idx: i,
-        created_at: m.created_at,
-        role: m.role,
-        content: m.content.length > 80 ? m.content.slice(0, 80) + '…' : m.content,
-      }));
-      // eslint-disable-next-line no-console
-      console.log(`[Chat] ${label} page (count=${msgs?.length ?? 0})`, rows);
-    } catch {}
-  };
 
   // Load older messages (one page) when near top
   const loadOlder = () => {
@@ -83,7 +76,6 @@ export default function Chat() {
         if (resp.status_code !== 0) { loadingRef.current = false; setIsLoadingPage(false); return; }
         const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
         const pageMsgs = data.messages || [];
-        if (pageMsgs.length) logPage('older get_messages', pageMsgs);
 
         if (pageMsgs.length) {
           shouldScrollBottomRef.current = false;
@@ -175,6 +167,37 @@ export default function Chat() {
 
   useEffect(() => { hasMoreRef.current = hasMore; }, [hasMore]);
   useEffect(() => { loadingRef.current = isLoadingPage; }, [isLoadingPage]);
+  const isTyping = activeAgentId != null
+    ? typingByAgent[activeAgentId!] !== undefined
+    : Object.keys(typingByAgent).length > 0;
+
+  const stopTyping = (agentId: number | null | undefined) => {
+    if (agentId == null) return;
+    setTypingByAgent((prev) => {
+      if (!(agentId in prev)) return prev;
+      const next = { ...prev };
+      delete next[agentId];
+      return next;
+    });
+    const t = typingTimersRef.current.get(agentId);
+    if (t) clearTimeout(t);
+    typingTimersRef.current.delete(agentId);
+  };
+
+  const clearAllTyping = () => {
+    setTypingByAgent({});
+    typingTimersRef.current.forEach((t) => clearTimeout(t));
+    typingTimersRef.current.clear();
+  };
+
+  const startTyping = (agentId: number, ts?: number) => {
+    if (agentId == null) return;
+    setTypingByAgent((prev) => ({ ...prev, [agentId]: ts || Date.now() }));
+    const existing = typingTimersRef.current.get(agentId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => stopTyping(agentId), TYPING_TIMEOUT_MS);
+    typingTimersRef.current.set(agentId, timer as unknown as NodeJS.Timeout);
+  };
 
   // Auto-scroll selectively: stick to bottom on send/assistant reply or if already near bottom
   useEffect(() => {
@@ -182,7 +205,7 @@ export default function Chat() {
     if (!el) return;
     const should = shouldScrollBottomRef.current;
     const nearBottom = el.scrollHeight - el.clientHeight - el.scrollTop < SCROLL_NEAR_BOTTOM_PX;
-    if (should || nearBottom || typing) {
+    if (should || nearBottom || isTyping) {
       const behavior: ScrollBehavior = should ? 'auto' : 'smooth';
       // Wait for DOM to paint messages before scrolling
       requestAnimationFrame(() => {
@@ -190,7 +213,7 @@ export default function Chat() {
         shouldScrollBottomRef.current = false;
       });
     }
-  }, [messages, typing]);
+  }, [messages, isTyping]);
 
   useEffect(() => {
     if (!cfg) return;
@@ -213,11 +236,13 @@ export default function Chat() {
     ws.connect()
       .then(() => {
         setStatus('connected');
+        // Resolve active agent id for this conversation (single-agent UI)
+        const s = createSdk(cfg);
+        s.api.agent().then((a) => setActiveAgentId(a.agent_id)).catch(() => {});
         requestGetMessages({ count: PAGE_SIZE }, (resp) => {
           if (resp.status_code === 0) {
             const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: 0 };
             const initial = (data.messages || []).slice();
-            logPage('initial get_messages', initial);
             setOldestCursor((data.next_cursor as number) ?? null);
             setHasMore(!!data.has_more);
             hasMoreRef.current = !!data.has_more;
@@ -230,11 +255,14 @@ export default function Chat() {
       })
       .catch((e: any) => setStatus('error ' + e.message));
 
-    const off = ws.on('new_message', (evt: any) => {
+    const offNew = ws.on('new_message', (evt: any) => {
       const m = evt?.data?.message;
       if (m && m.role === 'assistant') {
-        setTyping(false);
-        if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
+        // Remember when the latest assistant reply arrived
+        if (typeof m.created_at === 'number') lastAssistantTsRef.current = m.created_at;
+        // Stop typing for this conversation's agent
+        if (activeAgentId != null) stopTyping(activeAgentId);
+        else clearAllTyping();
         shouldScrollBottomRef.current = true;
         // Append assistant reply safely even if initial page arrives slightly later
         setMessages((prev) => {
@@ -245,10 +273,27 @@ export default function Chat() {
         });
       }
     });
+    const offPrep = ws.on('agent_preparing', (evt: any) => {
+      const agentId = evt?.data?.agent_id as number | undefined;
+      const ts = (evt?.data?.ts_ms as number | undefined) ?? Date.now();
+      // Guard: ignore stale events clearly older than the latest assistant reply (allow small drift)
+      if (agentId != null) {
+        const minTs = lastAssistantTsRef.current ? lastAssistantTsRef.current - CLOCK_DRIFT_MS : 0;
+        if (ts >= minTs) startTyping(agentId, ts);
+      }
+    });
+    const offNoReply = ws.on('agent_no_reply', (evt: any) => {
+      const agentId = evt?.data?.agent_id as number | undefined;
+      if (agentId != null) stopTyping(agentId);
+    });
     startedRef.current = true;
     return () => {
-      off && off();
-      if (typingTimerRef.current) { clearTimeout(typingTimerRef.current); typingTimerRef.current = null; }
+      offNew && offNew();
+      offPrep && offPrep();
+      offNoReply && offNoReply();
+      // Clear any pending typing timers
+      typingTimersRef.current.forEach((t) => clearTimeout(t));
+      typingTimersRef.current.clear();
       try { wsRef.current?.close?.(); } catch {}
       startedRef.current = false;
     };
@@ -274,17 +319,14 @@ export default function Chat() {
     if (!content.trim()) return;
     // Optimistic user message
     shouldScrollBottomRef.current = true;
-    setMessages((prev) => [...prev, { role: 'user', name: 'owner', content, created_at: Date.now() }]);
+    const now = Date.now();
+    lastUserTsRef.current = now;
+    setMessages((prev) => [...prev, { role: 'user', name: 'owner', content, created_at: now }]);
     const toSend = content;
     setContent('');
     try {
       const sdk = createSdk(cfg);
-      const ack: { status: string; stream: boolean } = await sdk.api.sendMessage(toSend);
-      if (ack && ack.status === 'accepted') {
-        setTyping(true);
-        if (typingTimerRef.current) clearTimeout(typingTimerRef.current);
-        typingTimerRef.current = setTimeout(() => setTyping(false), TYPING_TIMEOUT_MS);
-      }
+      await sdk.api.sendMessage(toSend);
     } catch {}
   };
 
@@ -314,7 +356,7 @@ export default function Chat() {
             </div>
           );
         })}
-        {typing && (
+        {isTyping && (
           <div className="flex justify-start">
             <div className="bg-accent text-accent-foreground border border-border rounded-2xl rounded-tl-none px-3 py-2 text-base max-w-[75%]">
               <TypingIndicator />
