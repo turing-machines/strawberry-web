@@ -306,7 +306,7 @@ export default function Chat() {
                   (isUser
                     ? 'bg-primary text-primary-foreground rounded-tr-none'
                     : 'bg-accent text-accent-foreground border border-border rounded-tl-none') +
-                  ' rounded-2xl px-3 py-2 text-sm max-w-[75%] whitespace-pre-wrap break-words'
+                  ' rounded-2xl px-3 py-2 text-base max-w-[75%] whitespace-pre-wrap break-words'
                 }
               >
                 {m.content}
@@ -316,7 +316,7 @@ export default function Chat() {
         })}
         {typing && (
           <div className="flex justify-start">
-            <div className="bg-accent text-accent-foreground border border-border rounded-2xl rounded-tl-none px-3 py-2 text-sm max-w-[75%]">
+            <div className="bg-accent text-accent-foreground border border-border rounded-2xl rounded-tl-none px-3 py-2 text-base max-w-[75%]">
               <TypingIndicator />
             </div>
           </div>
@@ -328,9 +328,9 @@ export default function Chat() {
           value={content}
           onChange={(e) => setContent(e.target.value)}
           placeholder="Type a message…"
-          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
+          className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus-visible:ring-2 focus-visible:ring-primary/40"
         />
-        <button type="submit" className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-sm hover:opacity-90">
+        <button type="submit" className="rounded-md bg-primary text-primary-foreground px-4 py-2 text-base hover:opacity-90">
           Send
         </button>
       </form>
