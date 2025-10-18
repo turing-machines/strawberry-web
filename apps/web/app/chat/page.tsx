@@ -35,14 +35,113 @@ export default function Chat() {
   const [typing, setTyping] = useState(false);
   const typingTimerRef = useRef<NodeJS.Timeout | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const topRef = useRef<HTMLDivElement | null>(null);
   const shouldScrollBottomRef = useRef(true);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  // Refs to avoid stale state inside IntersectionObserver
+  // Refs to avoid stale state inside scroll callbacks
   const hasMoreRef = useRef(true);
   const loadingRef = useRef(false);
   const boundaryRetriedRef = useRef(false);
   const [pagingEnabled, setPagingEnabled] = useState(false);
+  
+  // Helper: stable message key
+
+  // Load older messages (one page) when near top
+  const loadOlder = () => {
+    const ws = wsRef.current;
+    if (!ws) return;
+    if (loadingRef.current) return;
+    if (!hasMoreRef.current) return;
+    if (oldestCursor === null) return;
+
+    const el = listRef.current;
+    if (!el) return;
+    loadingRef.current = true;
+    setIsLoadingPage(true);
+
+    const prevScrollHeight = el.scrollHeight;
+    const prevScrollTop = el.scrollTop;
+
+    const reqId = rid();
+    const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
+      if (resp?.type === 'response' && resp.request_id === reqId) {
+        off();
+        if (resp.status_code !== 0) { loadingRef.current = false; setIsLoadingPage(false); return; }
+        const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
+        const pageMsgs = data.messages || [];
+
+        if (pageMsgs.length) {
+          shouldScrollBottomRef.current = false;
+          setMessages((prev) => {
+            const seen = new Set<string>();
+            const merged = [...pageMsgs, ...prev];
+            const out: Message[] = [];
+            for (const m of merged) {
+              const k = messageKey(m);
+              if (!seen.has(k)) { seen.add(k); out.push(m); }
+            }
+            return out;
+          });
+          setOldestCursor((data.next_cursor ?? oldestCursor) as number | null);
+          hasMoreRef.current = !!data.has_more;
+          setHasMore(!!data.has_more);
+          boundaryRetriedRef.current = false;
+
+          // Preserve scroll position after prepend
+          requestAnimationFrame(() => {
+            const newScrollHeight = el.scrollHeight;
+            const delta = newScrollHeight - prevScrollHeight;
+            el.scrollTop = prevScrollTop + delta;
+          });
+        } else if (!data.has_more && hasMoreRef.current && oldestCursor && !boundaryRetriedRef.current) {
+          // Single boundary retry with before-1 for strict older-than servers
+          boundaryRetriedRef.current = true;
+          const reqId2 = rid();
+          const off2 = ws.on('get_messages', (resp2: WsResponse<GetMessagesData>) => {
+            if (resp2?.type === 'response' && resp2.request_id === reqId2) {
+              off2();
+              // Re-run merge handling
+              if (resp2.status_code === 0) {
+                const d2 = (resp2.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
+                const pg2 = d2.messages || [];
+                if (pg2.length) {
+                  shouldScrollBottomRef.current = false;
+                  setMessages((prev) => {
+                    const seen = new Set<string>();
+                    const merged = [...pg2, ...prev];
+                    const out: Message[] = [];
+                    for (const m of merged) { const k = messageKey(m); if (!seen.has(k)) { seen.add(k); out.push(m); } }
+                    return out;
+                  });
+                  setOldestCursor((d2.next_cursor ?? oldestCursor) as number | null);
+                  hasMoreRef.current = !!d2.has_more;
+                  setHasMore(!!d2.has_more);
+                  requestAnimationFrame(() => {
+                    const newScrollHeight = el.scrollHeight;
+                    const delta = newScrollHeight - prevScrollHeight;
+                    el.scrollTop = prevScrollTop + delta;
+                  });
+                } else {
+                  hasMoreRef.current = !!d2.has_more;
+                  setHasMore(!!d2.has_more);
+                }
+              }
+              loadingRef.current = false;
+              setIsLoadingPage(false);
+            }
+          });
+          try { ws.send('get_messages', { count: PAGE_SIZE, before: (oldestCursor as number) - 1 } as any, reqId2); } catch { off2(); }
+          return;
+        } else {
+          hasMoreRef.current = !!data.has_more;
+          setHasMore(!!data.has_more);
+        }
+
+        loadingRef.current = false;
+        setIsLoadingPage(false);
+      }
+    });
+    try { ws.send('get_messages', { count: PAGE_SIZE, before: oldestCursor as number } as any, reqId); } catch { off(); loadingRef.current = false; setIsLoadingPage(false); }
+  };
 
   useEffect(() => {
     loadConfig().then(setCfg).catch(() => {});
@@ -128,114 +227,20 @@ export default function Chat() {
     };
   }, [cfg]);
 
-  // Enable paging only after user scrolls near top once
+  // Single scroll-based infinite loader
   useEffect(() => {
     const el = listRef.current;
     if (!el) return;
     const onScroll = () => {
-      if (el.scrollTop < 24) setPagingEnabled(true);
+      const atTop = el.scrollTop <= 2;
+      if (atTop && !pagingEnabled) setPagingEnabled(true);
+      if (atTop && pagingEnabled) loadOlder();
     };
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, []);
-
-  // Infinite scroll: observe the top sentinel and request older pages via WS
-  useEffect(() => {
-    const root = listRef.current;
-    const sentinel = topRef.current;
-    if (!root || !sentinel) return;
-    const ws = wsRef.current;
-    if (!ws) return;
-    if (!pagingEnabled) return; // wait until user scrolls near top
-    if (oldestCursor === null) return; // don't start paging until initial cursor is known
-
-    let blocked = false;
-    const io = new IntersectionObserver(
-      (entries) => {
-        const [e] = entries;
-        if (!e || !e.isIntersecting) return;
-        if (blocked) return;
-        if (!hasMoreRef.current || loadingRef.current) return;
-        blocked = true;
-        // Pause observing during a load to prevent rapid re-fires while sentinel stays visible
-        try { io.unobserve(sentinel); } catch {}
-        // Load older page
-        const el = listRef.current!;
-        const prevScrollHeight = el.scrollHeight;
-        const prevScrollTop = el.scrollTop;
-        setIsLoadingPage(true);
-
-        const handleResponse = (resp: WsResponse<GetMessagesData>) => {
-          if (resp.status_code !== 0) { setIsLoadingPage(false); return; }
-          const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
-          const pageMsgs: Message[] = data.messages || [];
-
-          // Do not auto-stick to bottom when prepending
-          shouldScrollBottomRef.current = false;
-          if (pageMsgs.length) {
-            setMessages((prev) => {
-              // Dedupe by composite key
-              const seen = new Set<string>();
-              const hash = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h.toString(36); };
-              const key = (m: Message) => `${m.created_at}:${m.role}:${hash(m.content)}`;
-              const merged = [...pageMsgs, ...prev];
-              const out: Message[] = [];
-              for (const m of merged) { const k = key(m); if (!seen.has(k)) { seen.add(k); out.push(m); } }
-              return out;
-            });
-
-            setOldestCursor((data.next_cursor ?? oldestCursor) as number | null);
-            const more = !!data.has_more;
-            hasMoreRef.current = more;
-            setHasMore(more);
-            boundaryRetriedRef.current = false;
-
-            // Preserve scroll position
-            requestAnimationFrame(() => {
-              const newScrollHeight = el.scrollHeight;
-              const delta = newScrollHeight - prevScrollHeight;
-              el.scrollTop = prevScrollTop + delta;
-            });
-            setIsLoadingPage(false);
-            blocked = false;
-            // Resume observing after load completes
-            try { io.observe(sentinel); } catch {}
-            return;
-          }
-
-          // Boundary retry: if server returned 0 but previously indicated has_more, try before-1 once
-          if (!data.has_more && hasMoreRef.current && oldestCursor && !boundaryRetriedRef.current) {
-            boundaryRetriedRef.current = true;
-            const reqId2 = rid();
-            const off2 = ws.on('get_messages', (resp2: WsResponse<GetMessagesData>) => {
-              if (resp2?.type === 'response' && resp2.request_id === reqId2) {
-                off2();
-                handleResponse(resp2);
-              }
-            });
-            try { ws.send('get_messages', { count: PAGE_SIZE, before: (oldestCursor as number) - 1 } as any, reqId2); } catch { off2(); setIsLoadingPage(false); }
-            return;
-          }
-          const more = !!data.has_more;
-          hasMoreRef.current = more;
-          setHasMore(more);
-          boundaryRetriedRef.current = false;
-          setIsLoadingPage(false);
-          blocked = false;
-          try { io.observe(sentinel); } catch {}
-        };
-
-        const reqId = rid();
-        const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
-          if (resp?.type === 'response' && resp.request_id === reqId) { off(); handleResponse(resp); }
-        });
-        try { ws.send('get_messages', { count: PAGE_SIZE, before: oldestCursor as number } as any, reqId); } catch { off(); setIsLoadingPage(false); }
-      },
-      { root, threshold: 0, rootMargin: '0px 0px -90% 0px' }
-    );
-    io.observe(sentinel);
-    return () => io.disconnect();
   }, [pagingEnabled, oldestCursor]);
+
+  // (Optional) could auto-fill if not scrollable; intentionally skipped to avoid extra requests on load
 
   const send = async (e: any) => {
     e.preventDefault();
@@ -269,11 +274,10 @@ export default function Chat() {
         <small className="text-muted-foreground">{status}</small>
       </div>
       <div ref={listRef} className="border border-border rounded-md p-3 flex-1 overflow-auto mb-3 bg-card text-card-foreground space-y-2">
-        <div ref={topRef} className="h-px -mt-px" />
-        {messages.map((m) => {
+        {messages.map((m, idx) => {
           const isUser = m.role === 'user';
           return (
-            <div key={messageKey(m)} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
+            <div key={`${messageKey(m)}#${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
               <div
                 className={
                   (isUser
