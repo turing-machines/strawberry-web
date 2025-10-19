@@ -1,8 +1,12 @@
 import type { User, Agent, Message } from '@strawberry/shared';
 import { ApiClient } from './http';
 
-export function createApi(apiBaseUrl: string, getToken: () => string | null) {
-  const http = new ApiClient(apiBaseUrl, getToken);
+export function createApi(
+  apiBaseUrl: string,
+  getToken: () => string | null,
+  refreshToken?: () => Promise<string | null>,
+) {
+  const http = new ApiClient(apiBaseUrl, getToken, refreshToken);
   return {
     // Auth
     register: (b: { email: string; password: string; name?: string }) =>
@@ -32,4 +36,3 @@ export function createApi(apiBaseUrl: string, getToken: () => string | null) {
     sendMessage: (content: string) => http.post<{ status: string; stream: boolean }>(`/v1/conversations/messages`, { content }),
   };
 }
-

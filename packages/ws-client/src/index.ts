@@ -26,8 +26,18 @@ export class WsClient {
         this.backoff = 500;
         resolve();
       };
-      this.ws.onerror = (e) => reject(e);
-      this.ws.onclose = () => {
+      this.ws.onerror = (e) => {
+        this.emit('auth_error', { error: 'ws_error', event: e });
+        reject(e);
+      };
+      this.ws.onclose = (ev: CloseEvent) => {
+        // Inspect close reason to detect auth failures
+        const reason = ev?.reason;
+        if (reason === 'token_expired' || reason === 'invalid_token') {
+          this.emit('auth_error', { error: reason });
+          this.manualClose = true; // stop reconnecting on auth errors
+          return;
+        }
         if (!this.manualClose) {
           setTimeout(() => this.connect().catch(() => {}), this.backoff);
           this.backoff = Math.min(this.backoff * 2, 30000);

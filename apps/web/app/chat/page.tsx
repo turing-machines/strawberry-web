@@ -238,7 +238,15 @@ export default function Chat() {
         setStatus('connected');
         // Resolve active agent id for this conversation (single-agent UI)
         const s = createSdk(cfg);
-        s.api.agent().then((a) => setActiveAgentId(a.agent_id)).catch(() => {});
+        s.api
+          .agent()
+          .then((a) => setActiveAgentId(a.agent_id))
+          .catch((e: any) => {
+            if (e?.auth_error === 'token_expired' || e?.auth_error === 'invalid_token') {
+              try { tokenStore.clear(); } catch {}
+              router.replace('/');
+            }
+          });
         requestGetMessages({ count: PAGE_SIZE }, (resp) => {
           if (resp.status_code === 0) {
             const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: 0 };
@@ -253,7 +261,10 @@ export default function Chat() {
           }
         });
       })
-      .catch((e: any) => setStatus('error ' + e.message));
+      .catch((_e: any) => {
+        try { tokenStore.clear(); } catch {}
+        router.replace('/');
+      });
 
     const offNew = ws.on('new_message', (evt: any) => {
       const m = evt?.data?.message;
@@ -327,7 +338,12 @@ export default function Chat() {
     try {
       const sdk = createSdk(cfg);
       await sdk.api.sendMessage(toSend);
-    } catch {}
+    } catch (e: any) {
+      if (e?.auth_error === 'token_expired' || e?.auth_error === 'invalid_token') {
+        try { tokenStore.clear(); } catch {}
+        router.replace('/');
+      }
+    }
   };
 
   if (!mounted || !cfg) return <div>Loading…</div>;
