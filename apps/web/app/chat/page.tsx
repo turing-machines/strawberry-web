@@ -262,8 +262,8 @@ export default function Chat() {
         });
       })
       .catch((_e: any) => {
-        try { tokenStore.clear(); } catch {}
-        router.replace('/');
+        // Do not force logout on server unavailability; ws client will auto-reconnect
+        setStatus('disconnected');
       });
 
     const offNew = ws.on('new_message', (evt: any) => {

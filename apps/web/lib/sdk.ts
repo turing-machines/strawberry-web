@@ -16,6 +16,10 @@ export function createSdk(cfg: AppConfig) {
       try { tokenStore.clear(); } catch {}
       if (typeof window !== 'undefined') window.location.href = '/';
     });
+    // Network errors should not force logout; allow auto-reconnect
+    c.on('net_error', (_info: any) => {
+      /* no-op */
+    });
     return c;
   };
   return { api, ws };

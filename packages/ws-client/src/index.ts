@@ -27,7 +27,7 @@ export class WsClient {
         resolve();
       };
       this.ws.onerror = (e) => {
-        this.emit('auth_error', { error: 'ws_error', event: e });
+        this.emit('net_error', { error: 'ws_error', event: e });
         reject(e);
       };
       this.ws.onclose = (ev: CloseEvent) => {
