@@ -24,10 +24,51 @@ const hash = (s: string) => {
 };
 const messageKey = (m: Message) => `${m.created_at}:${m.role}:${hash(m.content)}`;
 
+type ChatItem = Message & { images?: string[] };
+
+function sanitizeUrl(u: string): string {
+  // Trim trailing punctuation and brackets that often stick to pasted links
+  return u.replace(/[\]\)>,;.!]+$/g, '');
+}
+
+function extractImageUrls(text?: string): string[] {
+  if (!text) return [];
+  const urls = new Set<string>();
+  // Markdown image: ![alt](url)
+  const mdImg = /!\[[^\]]*\]\((https?:\/\/[^\s)]+)\)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = mdImg.exec(text)) !== null) {
+    if (m[1]) urls.add(sanitizeUrl(m[1] as string));
+  }
+  // Plain urls ending with common image extensions
+  const imgExt = /(https?:\/\/[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg))/gi;
+  while ((m = imgExt.exec(text)) !== null) {
+    if (m[1]) urls.add(sanitizeUrl(m[1] as string));
+  }
+  // Generic URLs (may point to images without file extensions); we'll try to render and hide on error
+  const generic = /(https?:\/\/[^\s]+)/gi;
+  while ((m = generic.exec(text)) !== null) {
+    if (m[1]) urls.add(sanitizeUrl(m[1] as string));
+  }
+  return Array.from(urls);
+}
+
+function extractImagesFromEvent(evt: any): string[] {
+  const imgs: string[] = [];
+  // Try common locations
+  const cand = evt?.data?.images || evt?.data?.message?.images || [];
+  if (Array.isArray(cand)) {
+    for (const u of cand) if (typeof u === 'string') imgs.push(u);
+  }
+  // Fallback: parse from message content
+  const fromText = extractImageUrls(evt?.data?.message?.content);
+  return Array.from(new Set([...(imgs || []), ...fromText]));
+}
+
 export default function Chat() {
   const [cfg, setCfg] = useState<any>();
   const [mounted, setMounted] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatItem[]>([]);
   const [oldestCursor, setOldestCursor] = useState<number | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingPage, setIsLoadingPage] = useState(false);
@@ -50,6 +91,8 @@ export default function Chat() {
   const lastAssistantTsRef = useRef<number>(0);
   // Timestamp of the most recent user message we initiated (optimistic send)
   const lastUserTsRef = useRef<number>(0);
+  // Lightbox state
+  const [lightbox, setLightbox] = useState<{ msgIdx: number; imgIdx: number } | null>(null);
   
   // Helper: stable message key
 
@@ -215,6 +258,33 @@ export default function Chat() {
     }
   }, [messages, isTyping]);
 
+  // Keyboard navigation for lightbox
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (!lightbox) return;
+      if (ev.key === 'Escape') setLightbox(null);
+      if (ev.key === 'ArrowRight') {
+        setLightbox((s) => {
+          if (!s) return s;
+          const imgs = messages[s.msgIdx]?.images || [];
+          if (!imgs.length) return null;
+          return { msgIdx: s.msgIdx, imgIdx: (s.imgIdx + 1) % imgs.length };
+        });
+      }
+      if (ev.key === 'ArrowLeft') {
+        setLightbox((s) => {
+          if (!s) return s;
+          const imgs = messages[s.msgIdx]?.images || [];
+          if (!imgs.length) return null;
+          return { msgIdx: s.msgIdx, imgIdx: (s.imgIdx - 1 + imgs.length) % imgs.length };
+        });
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox, messages]);
+
   useEffect(() => {
     if (!cfg) return;
     if (startedRef.current) return; // guard double-mount in React StrictMode
@@ -250,7 +320,10 @@ export default function Chat() {
         requestGetMessages({ count: PAGE_SIZE }, (resp) => {
           if (resp.status_code === 0) {
             const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: 0 };
-            const initial = (data.messages || []).slice();
+            const initial: ChatItem[] = (data.messages || []).map((msg) => ({
+              ...(msg as Message),
+              images: extractImageUrls((msg as Message).content),
+            }));
             setOldestCursor((data.next_cursor as number) ?? null);
             setHasMore(!!data.has_more);
             hasMoreRef.current = !!data.has_more;
@@ -276,11 +349,12 @@ export default function Chat() {
         else clearAllTyping();
         shouldScrollBottomRef.current = true;
         // Append assistant reply safely even if initial page arrives slightly later
+        const images = extractImagesFromEvent(evt);
         setMessages((prev) => {
           // If message already present (dedupe), don't duplicate
           const k = messageKey(m as Message);
           if (prev.find((x) => messageKey(x) === k)) return prev;
-          return [...prev, m as Message];
+          return [...prev, { ...(m as Message), images } as ChatItem];
         });
       }
     });
@@ -332,7 +406,10 @@ export default function Chat() {
     shouldScrollBottomRef.current = true;
     const now = Date.now();
     lastUserTsRef.current = now;
-    setMessages((prev) => [...prev, { role: 'user', name: 'owner', content, created_at: now }]);
+    setMessages((prev) => [
+      ...prev,
+      { role: 'user', name: 'owner', content, created_at: now, images: extractImageUrls(content) } as ChatItem,
+    ]);
     const toSend = content;
     setContent('');
     try {
@@ -357,6 +434,17 @@ export default function Chat() {
       <div ref={listRef} className="border border-border rounded-md p-3 flex-1 overflow-auto mb-3 bg-card text-card-foreground space-y-2">
         {messages.map((m, idx) => {
           const isUser = m.role === 'user';
+          const onImgError = (imgIndex: number) => {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const item: ChatItem = { ...(next[idx] as ChatItem) };
+              const imgs = (item.images || []).slice();
+              imgs.splice(imgIndex, 1);
+              item.images = imgs;
+              next[idx] = item;
+              return next as ChatItem[];
+            });
+          };
           return (
             <div key={`${messageKey(m)}#${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
               <div
@@ -368,10 +456,86 @@ export default function Chat() {
                 }
               >
                 {m.content}
+                {m.images && m.images.length > 0 && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {m.images.map((src, i) => (
+                      <a
+                        key={i}
+                        href={src}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setLightbox({ msgIdx: idx, imgIdx: i });
+                        }}
+                      >
+                        <img
+                          src={src}
+                          alt="image"
+                          className="max-h-40 w-full object-cover rounded-md border border-border"
+                          loading="lazy"
+                          referrerPolicy="no-referrer"
+                          onError={() => onImgError(i)}
+                        />
+                      </a>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           );
         })}
+        {lightbox && (() => {
+          const imgs = messages[lightbox.msgIdx]?.images || [];
+          const src = imgs[lightbox.imgIdx];
+          if (!src) return null;
+          const close = () => setLightbox(null);
+          const next = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx + 1) % imgs.length });
+          const prev = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx - 1 + imgs.length) % imgs.length });
+          return (
+            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={close} role="dialog" aria-modal="true">
+              <div className="relative max-w-[95vw] max-h-[90vh]">
+                <img
+                  src={src}
+                  alt="image"
+                  className="max-w-[95vw] max-h-[90vh] object-contain rounded-md"
+                  onClick={(e) => e.stopPropagation()}
+                  referrerPolicy="no-referrer"
+                />
+                <button
+                  onClick={(e) => { e.stopPropagation(); close(); }}
+                  className="absolute top-2 right-2 rounded-md bg-black/60 text-white px-2 py-1 text-sm"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+                {imgs.length > 1 && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); prev(); }}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
+                      aria-label="Previous"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); next(); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
+                      aria-label="Next"
+                    >
+                      ›
+                    </button>
+                  </>
+                )}
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-white/80 text-xs">
+                  {lightbox.imgIdx + 1} / {imgs.length}
+                  {' '}
+                  <a href={src} target="_blank" rel="noreferrer" className="underline ml-2">Open</a>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         {isTyping && (
           <div className="flex justify-start">
             <div className="bg-accent text-accent-foreground border border-border rounded-2xl rounded-tl-none px-3 py-2 text-base max-w-[75%]">
