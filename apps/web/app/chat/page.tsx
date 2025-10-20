@@ -65,6 +65,87 @@ function extractImagesFromEvent(evt: any): string[] {
   return Array.from(new Set([...(imgs || []), ...fromText]));
 }
 
+type ContentBlock = { type: 'text'; text: string } | { type: 'gallery'; urls: string[]; count?: number };
+function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrls: Set<string> } {
+  const blocks: ContentBlock[] = [];
+  const contentUrls = new Set<string>();
+  if (!text) return { blocks, contentUrls };
+  const lines = text.split(/\r?\n/);
+  let gallery: string[] = [];
+  let galleryCount = 0; // for placeholder-based galleries
+  let paragraph: string[] = [];
+  let pendingBlanks = 0; // blank lines encountered while in gallery mode
+  const isUrlOnly = (s: string) => /^https?:\/\/\S+$/.test(s.trim());
+  const placeholderCount = (s: string) => {
+    const t = s.trim().toLowerCase();
+    if (!t) return 0;
+    // count words strictly equal to 'image'
+    return t.split(/\s+/).reduce((acc, w) => acc + (w === 'image' ? 1 : 0), 0);
+  };
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      blocks.push({ type: 'text', text: paragraph.join('\n') });
+      paragraph = [];
+    }
+  };
+  const flushGallery = () => {
+    if (gallery.length) {
+      blocks.push({ type: 'gallery', urls: gallery });
+      gallery = [];
+    }
+    if (galleryCount > 0) {
+      blocks.push({ type: 'gallery', urls: [], count: galleryCount });
+      galleryCount = 0;
+    }
+  };
+  for (const raw of lines) {
+    const line = raw; // keep original spacing for text
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      // If we are in gallery mode, keep blanks to insert before the next text paragraph
+      if (gallery.length > 0 || galleryCount > 0) {
+        pendingBlanks++;
+        continue;
+      }
+      flushGallery();
+      paragraph.push('');
+      continue;
+    }
+    if (isUrlOnly(trimmed)) {
+      // URL-only line becomes part of a gallery
+      if (gallery.length === 0 && galleryCount === 0) flushParagraph();
+      const u = sanitizeUrl(trimmed);
+      gallery.push(u);
+      contentUrls.add(u);
+      continue;
+    }
+    const phc = placeholderCount(trimmed);
+    if (phc > 0) {
+      // If we're already accumulating a URL gallery, treat placeholder lines as spacing
+      // so they do not split galleries or create duplicate placeholder galleries.
+      if (gallery.length > 0) {
+        continue;
+      }
+      // Otherwise, use placeholders to create a gallery from attachments only.
+      if (gallery.length === 0 && galleryCount === 0) flushParagraph();
+      galleryCount += phc;
+      continue;
+    }
+    // non-URL line ends any gallery and is part of text
+    flushGallery();
+    // re-insert pending blank lines so the next paragraph starts on a new line
+    if (pendingBlanks > 0) {
+      while (pendingBlanks-- > 0) paragraph.push('');
+      pendingBlanks = 0;
+    }
+    paragraph.push(line);
+  }
+  flushGallery();
+  // trailing blanks after gallery at EOF are not needed
+  flushParagraph();
+  return { blocks, contentUrls };
+}
+
 export default function Chat() {
   const [cfg, setCfg] = useState<any>();
   const [mounted, setMounted] = useState(false);
@@ -445,6 +526,18 @@ export default function Chat() {
               return next as ChatItem[];
             });
           };
+          // helper to remove an image URL from this message
+          const removeImgUrl = (url: string) => {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const item: ChatItem = { ...(next[idx] as ChatItem) };
+              item.images = (item.images || []).filter((u) => u !== url);
+              next[idx] = item;
+              return next as ChatItem[];
+            });
+          };
+          const { blocks, contentUrls } = parseContentBlocks(m.content);
+          const attachments = (m.images || []).filter((u) => !contentUrls.has(u));
           return (
             <div key={`${messageKey(m)}#${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
               <div
@@ -455,36 +548,135 @@ export default function Chat() {
                   ' rounded-2xl px-3 py-2 text-base max-w-[75%] whitespace-pre-wrap break-words'
                 }
               >
-                {m.content}
-                {m.images && m.images.length > 0 && (
+                {/* Render blocks: consecutive URL-only lines become a single gallery */}
+                <div className="[&>a]:underline whitespace-pre-wrap">
+                  {(() => {
+                    // Clone attachments array to consume for placeholder galleries
+                    const pending = attachments.slice();
+                    return blocks.map((b, bi) => {
+                      if (b.type === 'text') return <div key={bi}>{b.text}</div>;
+                      let urls = b.urls || [];
+                      if ((!urls || urls.length === 0) && b.count && b.count > 0) {
+                        urls = pending.splice(0, b.count);
+                      }
+                      if (!urls || urls.length === 0) return <div key={bi} />;
+                      return (
+                        <div key={bi}>
+                          {/* Show the original links first, then the gallery */}
+                          <div className="whitespace-pre-wrap">
+                            {urls.map((src, li) => (
+                              <div key={li}>
+                                <a href={src} target="_blank" rel="noreferrer" className="underline">
+                                  {src}
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-2 grid grid-cols-2 gap-2">
+                            {urls.map((src, i) => {
+                              const globalIdx = (m.images || []).indexOf(src);
+                              const openLb = (e: React.MouseEvent) => {
+                                e.preventDefault();
+                                if (globalIdx >= 0) setLightbox({ msgIdx: idx, imgIdx: globalIdx });
+                              };
+                              return (
+                                <a key={i} href={src} target="_blank" rel="noreferrer" onClick={openLb}>
+                                  <img
+                                    src={src}
+                                    alt="image"
+                                    className="max-h-40 w-full object-cover rounded-md border border-border"
+                                    loading="lazy"
+                                    referrerPolicy="no-referrer"
+                                    onError={() => removeImgUrl(src)}
+                                  />
+                                </a>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
+                </div>
+                {/* Render non-inline attachments (images present in message metadata but not in text) */}
+                {attachments.length > 0 && (
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    {m.images.map((src, i) => (
-                      <a
-                        key={i}
-                        href={src}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          setLightbox({ msgIdx: idx, imgIdx: i });
-                        }}
-                      >
-                        <img
-                          src={src}
-                          alt="image"
-                          className="max-h-40 w-full object-cover rounded-md border border-border"
-                          loading="lazy"
-                          referrerPolicy="no-referrer"
-                          onError={() => onImgError(i)}
-                        />
-                      </a>
-                    ))}
+                    {attachments.map((src, i) => {
+                      const globalIdx = (m.images || []).indexOf(src);
+                      const openLb = (e: React.MouseEvent) => {
+                        e.preventDefault();
+                        if (globalIdx >= 0) setLightbox({ msgIdx: idx, imgIdx: globalIdx });
+                      };
+                      return (
+                        <a key={i} href={src} target="_blank" rel="noreferrer" onClick={openLb}>
+                          <img
+                            src={src}
+                            alt="image"
+                            className="max-h-40 w-full object-cover rounded-md border border-border"
+                            loading="lazy"
+                            referrerPolicy="no-referrer"
+                            onError={() => removeImgUrl(src)}
+                          />
+                        </a>
+                      );
+                    })}
                   </div>
                 )}
               </div>
             </div>
           );
         })}
+        {lightbox && (() => {
+          const imgs = messages[lightbox.msgIdx]?.images || [];
+          const src = imgs[lightbox.imgIdx];
+          if (!src) return null;
+          const close = () => setLightbox(null);
+          const next = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx + 1) % imgs.length });
+          const prev = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx - 1 + imgs.length) % imgs.length });
+          return (
+            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={close} role="dialog" aria-modal="true">
+              <div className="relative max-w-[95vw] max-h-[90vh]">
+                <img
+                  src={src}
+                  alt="image"
+                  className="max-w-[95vw] max-h-[90vh] object-contain rounded-md"
+                  onClick={(e) => e.stopPropagation()}
+                  referrerPolicy="no-referrer"
+                />
+                <button
+                  onClick={(e) => { e.stopPropagation(); close(); }}
+                  className="absolute top-2 right-2 rounded-md bg-black/60 text-white px-2 py-1 text-sm"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+                {imgs.length > 1 && (
+                  <>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); prev(); }}
+                      className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
+                      aria-label="Previous"
+                    >
+                      ‹
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); next(); }}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
+                      aria-label="Next"
+                    >
+                      ›
+                    </button>
+                  </>
+                )}
+                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-white/80 text-xs">
+                  {lightbox.imgIdx + 1} / {imgs.length}
+                  {' '}
+                  <a href={src} target="_blank" rel="noreferrer" className="underline ml-2">Open</a>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         {lightbox && (() => {
           const imgs = messages[lightbox.msgIdx]?.images || [];
           const src = imgs[lightbox.imgIdx];
