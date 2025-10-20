@@ -133,9 +133,9 @@ function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrl
     }
     // non-URL line ends any gallery and is part of text
     flushGallery();
-    // re-insert pending blank lines so the next paragraph starts on a new line
+    // re-insert exactly one blank line after a gallery, regardless of how many were present
     if (pendingBlanks > 0) {
-      while (pendingBlanks-- > 0) paragraph.push('');
+      paragraph.push('');
       pendingBlanks = 0;
     }
     paragraph.push(line);
@@ -199,16 +199,20 @@ export default function Chat() {
         off();
         if (resp.status_code !== 0) { loadingRef.current = false; setIsLoadingPage(false); return; }
         const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
-        const pageMsgs = data.messages || [];
+        // Convert incoming history messages to ChatItem with images extracted from content
+        const pageMsgs: ChatItem[] = (data.messages || []).map((msg) => ({
+          ...(msg as Message),
+          images: extractImageUrls((msg as Message).content),
+        }));
 
         if (pageMsgs.length) {
           shouldScrollBottomRef.current = false;
           setMessages((prev) => {
             const seen = new Set<string>();
-            const merged = [...pageMsgs, ...prev];
-            const out: Message[] = [];
+            const merged: ChatItem[] = [...pageMsgs, ...prev];
+            const out: ChatItem[] = [];
             for (const m of merged) {
-              const k = messageKey(m);
+              const k = messageKey(m as Message);
               if (!seen.has(k)) { seen.add(k); out.push(m); }
             }
             return out;
@@ -234,14 +238,17 @@ export default function Chat() {
               // Re-run merge handling
               if (resp2.status_code === 0) {
                 const d2 = (resp2.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
-                const pg2 = d2.messages || [];
+                const pg2: ChatItem[] = (d2.messages || []).map((msg) => ({
+                  ...(msg as Message),
+                  images: extractImageUrls((msg as Message).content),
+                }));
                 if (pg2.length) {
                   shouldScrollBottomRef.current = false;
                   setMessages((prev) => {
                     const seen = new Set<string>();
-                    const merged = [...pg2, ...prev];
-                    const out: Message[] = [];
-                    for (const m of merged) { const k = messageKey(m); if (!seen.has(k)) { seen.add(k); out.push(m); } }
+                    const merged: ChatItem[] = [...pg2, ...prev];
+                    const out: ChatItem[] = [];
+                    for (const m of merged) { const k = messageKey(m as Message); if (!seen.has(k)) { seen.add(k); out.push(m); } }
                     return out;
                   });
                   setOldestCursor((d2.next_cursor ?? oldestCursor) as number | null);
@@ -574,11 +581,26 @@ export default function Chat() {
                           </div>
                           <div className="mt-2 grid grid-cols-2 gap-2">
                             {urls.map((src, i) => {
-                              const globalIdx = (m.images || []).indexOf(src);
-                              const openLb = (e: React.MouseEvent) => {
-                                e.preventDefault();
-                                if (globalIdx >= 0) setLightbox({ msgIdx: idx, imgIdx: globalIdx });
-                              };
+                          let globalIdx = (m.images || []).indexOf(src);
+                          const openLb = (e: React.MouseEvent) => {
+                            e.preventDefault();
+                            setMessages((prev) => {
+                              // Ensure this URL exists in the message images for lightbox navigation
+                              const next = prev.slice();
+                              const item: ChatItem = { ...(next[idx] as ChatItem) };
+                              const imgs = item.images ? item.images.slice() : [];
+                              let gi = imgs.indexOf(src);
+                              if (gi < 0) {
+                                imgs.push(src);
+                                gi = imgs.length - 1;
+                              }
+                              item.images = imgs;
+                              next[idx] = item;
+                              // set lightbox after state update
+                              setTimeout(() => setLightbox({ msgIdx: idx, imgIdx: gi }), 0);
+                              return next as ChatItem[];
+                            });
+                          };
                               return (
                                 <a key={i} href={src} target="_blank" rel="noreferrer" onClick={openLb}>
                                   <img
