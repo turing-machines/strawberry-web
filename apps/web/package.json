@@ -14,8 +14,9 @@
   "dependencies": {
     "@repo/ui": "workspace:*",
     "@strawberry/api-client": "workspace:*",
-    "@strawberry/ws-client": "workspace:*",
     "@strawberry/shared": "workspace:*",
+    "@strawberry/ws-client": "workspace:*",
+    "liquid-glass-react": "^1.1.1",
     "next": "^15.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
@@ -28,8 +29,8 @@
     "@types/react": "19.1.0",
     "@types/react-dom": "19.1.1",
     "autoprefixer": "^10.4.21",
-    "clsx": "^2.1.1",
     "babel-loader": "^10.0.0",
+    "clsx": "^2.1.1",
     "eslint": "^9.34.0",
     "tailwind-merge": "^2.5.4",
     "tailwindcss": "^3.4.13",
