@@ -575,7 +575,14 @@ export default function Chat() {
             });
           };
           const { blocks, contentUrls } = parseContentBlocks(m.content);
-          const attachments = (m.images || []).filter((u) => !contentUrls.has(u));
+          // Include any URLs that appear inline (markdown images or links within text)
+          const inlineUrls = new Set(extractImageUrls(m.content));
+          const allContentUrls = new Set<string>([...contentUrls, ...inlineUrls]);
+          // Treat URLs equal after sanitization to avoid minor punctuation differences
+          const attachments = (m.images || []).filter((u) => !allContentUrls.has(sanitizeUrl(u)));
+          // Clone attachments to allow placeholder galleries to consume from this list
+          // so we don't render them again at the end.
+          let attachmentsPending = attachments.slice();
           return (
             <div key={`${messageKey(m)}#${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
               <div
@@ -589,13 +596,11 @@ export default function Chat() {
                 {/* Render blocks: consecutive URL-only lines become a single gallery */}
                 <div className="[&>a]:underline whitespace-pre-wrap">
                   {(() => {
-                    // Clone attachments array to consume for placeholder galleries
-                    const pending = attachments.slice();
                     return blocks.map((b, bi) => {
                       if (b.type === 'text') return <div key={bi}>{b.text}</div>;
                       let urls = b.urls || [];
                       if ((!urls || urls.length === 0) && b.count && b.count > 0) {
-                        urls = pending.splice(0, b.count);
+                        urls = attachmentsPending.splice(0, b.count);
                       }
                       if (!urls || urls.length === 0) return <div key={bi} />;
                       return (
@@ -652,9 +657,9 @@ export default function Chat() {
                   })()}
                 </div>
                 {/* Render non-inline attachments (images present in message metadata but not in text) */}
-                {attachments.length > 0 && (
+                {attachmentsPending.length > 0 && (
                   <div className="mt-2 grid grid-cols-2 gap-2">
-                    {attachments.map((src, i) => {
+                    {attachmentsPending.map((src, i) => {
                       const globalIdx = (m.images || []).indexOf(src);
                       const openLb = (e: React.MouseEvent) => {
                         e.preventDefault();
