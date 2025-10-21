@@ -174,6 +174,8 @@ export default function Chat() {
   const lastUserTsRef = useRef<number>(0);
   // Lightbox state
   const [lightbox, setLightbox] = useState<{ msgIdx: number; imgIdx: number } | null>(null);
+  // Menu state (header)
+  const [menuOpen, setMenuOpen] = useState(false);
   
   // Helper: stable message key
 
@@ -515,9 +517,38 @@ export default function Chat() {
 
   return (
     <div className="max-w-3xl mx-auto p-5 h-[100svh] flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-xl font-semibold">Chat</h2>
+      <div className="flex items-center justify-between mb-3 relative">
+        <button
+          type="button"
+          aria-label="Open menu"
+          onClick={() => setMenuOpen((v) => !v)}
+          className="inline-flex items-center justify-center w-10 h-10 rounded-md border border-border bg-card hover:bg-accent"
+        >
+          <span className="sr-only">Menu</span>
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+            <path fillRule="evenodd" d="M3.75 6.75A.75.75 0 0 1 4.5 6h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1-.75-.75Zm0 5.25a.75.75 0 0 1 .75-.75h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1-.75-.75Zm0 5.25a.75.75 0 0 1 .75-.75h15a.75.75 0 0 1 0 1.5h-15a.75.75 0 0 1-.75-.75Z" clipRule="evenodd" />
+          </svg>
+        </button>
         <small className="text-muted-foreground">{status}</small>
+
+        {menuOpen && (
+          <>
+            {/* Backdrop to close menu on outside click */}
+            <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
+            <div className="absolute left-0 top-12 z-50 w-48 rounded-md border border-border bg-card shadow-lg">
+              <button
+                className="w-full text-left px-3 py-2 hover:bg-accent"
+                onClick={() => {
+                  try { tokenStore.clear(); } catch {}
+                  setMenuOpen(false);
+                  router.replace('/');
+                }}
+              >
+                Logout
+              </button>
+            </div>
+          </>
+        )}
       </div>
       <div ref={listRef} className="border border-border rounded-md p-3 flex-1 overflow-auto mb-3 bg-card text-card-foreground space-y-2">
         {messages.map((m, idx) => {
