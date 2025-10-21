@@ -12,7 +12,9 @@ export default function Home() {
   const [name, setName] = useState('');
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [msg, setMsg] = useState('');
+  const [glassKey, setGlassKey] = useState(0);
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
 
   useEffect(() => {
     loadConfig().then(setCfg).catch((e) => setMsg(e.message));
@@ -24,12 +26,16 @@ export default function Home() {
     const el = contentRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
-      try { window.dispatchEvent(new Event('resize')); } catch {}
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => {
+        setGlassKey((k) => k + 1);
+        try { window.dispatchEvent(new Event('resize')); } catch {}
+      });
     });
     ro.observe(el);
     // Trigger once immediately as well
     try { window.dispatchEvent(new Event('resize')); } catch {}
-    return () => ro.disconnect();
+    return () => { ro.disconnect(); if (rafRef.current) cancelAnimationFrame(rafRef.current); };
   }, [cfg]);
 
   // Also re-measure when switching modes (login/register)
@@ -60,11 +66,12 @@ export default function Home() {
       background: 'radial-gradient(circle at 20% 10%, rgba(255,0,128,0.25), transparent 40%), radial-gradient(circle at 80% 30%, rgba(0,128,255,0.2), transparent 40%), radial-gradient(circle at 50% 80%, rgba(0,255,200,0.15), transparent 40%)'
     }}>
       <LiquidGlass
+        key={glassKey}
         displacementScale={64}
         blurAmount={0.08}
         saturation={130}
         aberrationIntensity={1.5}
-        elasticity={0.25}
+        elasticity={0}
         cornerRadius={16}
         padding="16px 20px"
         className="shadow-lg"
@@ -112,14 +119,16 @@ export default function Home() {
             )}
             <button
               type="submit"
-              className="w-full rounded-2xl border border-white/25 bg-white/10 backdrop-blur-md text-white px-4 py-3 text-sm shadow-[0_16px_70px_rgba(0,0,0,0.35)] hover:bg-white/15 active:scale-[0.98] transition"
+              className="w-full rounded-2xl border border-blue-300/60 bg-blue-600/70 backdrop-blur-md text-white px-4 py-3 text-sm font-medium shadow-[0_16px_70px_rgba(0,0,0,0.35)] hover:bg-blue-600/80 active:scale-[0.98] transition"
+              style={{ textShadow: '0 1px 2px rgba(0,0,0,0.35)' }}
             >
               {mode === 'login' ? 'Login' : 'Register'}
             </button>
           </form>
           <button
+            type="button"
             onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
-            className="mt-3 inline-flex items-center rounded-full border border-white/20 bg-white/10 backdrop-blur-md text-white px-3 py-1.5 text-xs shadow hover:bg-white/15"
+            className="mt-3 text-sm text-blue-300 hover:text-blue-200 hover:underline focus:outline-none bg-transparent"
           >
             Switch to {mode === 'login' ? 'register' : 'login'}
           </button>
