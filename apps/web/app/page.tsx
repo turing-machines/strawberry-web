@@ -18,6 +18,25 @@ export default function Home() {
     loadConfig().then(setCfg).catch((e) => setMsg(e.message));
   }, []);
 
+  // Ensure LiquidGlass recalculates its internal size when our content resizes
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return;
+    const el = contentRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      try { window.dispatchEvent(new Event('resize')); } catch {}
+    });
+    ro.observe(el);
+    // Trigger once immediately as well
+    try { window.dispatchEvent(new Event('resize')); } catch {}
+    return () => ro.disconnect();
+  }, [cfg]);
+
+  // Also re-measure when switching modes (login/register)
+  useEffect(() => {
+    try { window.dispatchEvent(new Event('resize')); } catch {}
+  }, [mode]);
+
   if (!cfg) return <div style={{ fontFamily: 'sans-serif', padding: 20 }}>Loading config… {msg}</div>;
   const sdk = createSdk(cfg);
 
@@ -35,23 +54,6 @@ export default function Home() {
     }
   };
 
-  // Ensure LiquidGlass recalculates its internal size when our content resizes
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el || typeof window === 'undefined' || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
-      try { window.dispatchEvent(new Event('resize')); } catch {}
-    });
-    ro.observe(el);
-    // Trigger once immediately as well
-    try { window.dispatchEvent(new Event('resize')); } catch {}
-    return () => ro.disconnect();
-  }, []);
-
-  // Also re-measure when switching modes (login/register)
-  useEffect(() => {
-    try { window.dispatchEvent(new Event('resize')); } catch {}
-  }, [mode]);
 
   return (
     <div className="min-h-[100svh] w-full relative px-4" style={{
