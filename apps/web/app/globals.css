@@ -52,6 +52,11 @@ body {
 
 body { @apply bg-background text-foreground; }
 
+/* Use Geist Mono for code-related elements, via the CSS variable set by next/font */
+code, kbd, samp, pre {
+  font-family: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 * {
   box-sizing: border-box;
   padding: 0;

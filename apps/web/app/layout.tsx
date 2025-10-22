@@ -6,10 +6,13 @@ import "./strict.css";
 const geistSans = localFont({
   src: "./fonts/GeistVF.woff",
   variable: "--font-geist-sans",
+  preload: true,
 });
 const geistMono = localFont({
   src: "./fonts/GeistMonoVF.woff",
   variable: "--font-geist-mono",
+  // This font is used for code blocks; avoid preloading to prevent unused-preload warnings.
+  preload: false,
 });
 
 export const metadata: Metadata = {
@@ -24,7 +27,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} bg-background text-foreground min-h-screen`}>
+      <body className={`${geistSans.className} ${geistMono.variable} bg-background text-foreground min-h-screen`}>
         {children}
       </body>
     </html>

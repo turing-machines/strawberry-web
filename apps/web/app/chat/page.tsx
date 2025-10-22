@@ -13,6 +13,14 @@ const SCROLL_NEAR_BOTTOM_PX = 80;
 const TYPING_TIMEOUT_MS = 30_000;
 const CLOCK_DRIFT_MS = 2_000;
 
+// Lightweight logger for WS traffic
+const logWs = (label: string, data?: any) => {
+  try {
+    // eslint-disable-next-line no-console
+    console.log(`[WS] ${label}`, data);
+  } catch {}
+};
+
 // Expected WS data shape for get_messages
 type GetMessagesData = { messages: Message[]; has_more: boolean; next_cursor: number };
 
@@ -301,6 +309,13 @@ export default function Chat() {
     const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
       if (resp?.type === 'response' && resp.request_id === reqId) {
         off();
+        logWs('recv get_messages (page)', {
+          reqId,
+          status_code: resp.status_code,
+          has_more: (resp.data as any)?.has_more,
+          next_cursor: (resp.data as any)?.next_cursor,
+          count: Array.isArray((resp.data as any)?.messages) ? (resp.data as any).messages.length : 0,
+        });
         if (resp.status_code !== 0) { loadingRef.current = false; setIsLoadingPage(false); return; }
         const data = (resp.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
         // Convert incoming history messages to ChatItem with images extracted from content
@@ -339,6 +354,13 @@ export default function Chat() {
           const off2 = ws.on('get_messages', (resp2: WsResponse<GetMessagesData>) => {
             if (resp2?.type === 'response' && resp2.request_id === reqId2) {
               off2();
+              logWs('recv get_messages (boundary retry)', {
+                reqId: reqId2,
+                status_code: resp2.status_code,
+                has_more: (resp2.data as any)?.has_more,
+                next_cursor: (resp2.data as any)?.next_cursor,
+                count: Array.isArray((resp2.data as any)?.messages) ? (resp2.data as any).messages.length : 0,
+              });
               // Re-run merge handling
               if (resp2.status_code === 0) {
                 const d2 = (resp2.data as GetMessagesData) || { messages: [], has_more: false, next_cursor: oldestCursor ?? 0 };
@@ -372,7 +394,11 @@ export default function Chat() {
               setIsLoadingPage(false);
             }
           });
-          try { ws.send('get_messages', { count: PAGE_SIZE, before: (oldestCursor as number) - 1 } as any, reqId2); } catch { off2(); }
+          try {
+            const payload = { count: PAGE_SIZE, before: (oldestCursor as number) - 1 } as any;
+            logWs('send get_messages (boundary retry)', { reqId: reqId2, data: payload });
+            ws.send('get_messages', payload, reqId2);
+          } catch { off2(); }
           return;
         } else {
           hasMoreRef.current = !!data.has_more;
@@ -383,7 +409,11 @@ export default function Chat() {
         setIsLoadingPage(false);
       }
     });
-    try { ws.send('get_messages', { count: PAGE_SIZE, before: oldestCursor as number } as any, reqId); } catch { off(); loadingRef.current = false; setIsLoadingPage(false); }
+    try {
+      const payload = { count: PAGE_SIZE, before: oldestCursor as number } as any;
+      logWs('send get_messages (page)', { reqId, data: payload });
+      ws.send('get_messages', payload, reqId);
+    } catch { off(); loadingRef.current = false; setIsLoadingPage(false); }
   };
 
   const router = useRouter();
@@ -485,9 +515,17 @@ export default function Chat() {
 
     const requestGetMessages = <T extends object>(data: T, handler: (resp: WsResponse<GetMessagesData>) => void) => {
       const reqId = rid();
+      logWs('send get_messages', { reqId, data });
       const off = ws.on('get_messages', (resp: WsResponse<GetMessagesData>) => {
         if (resp?.type === 'response' && resp.request_id === reqId) {
           off();
+          logWs('recv get_messages', {
+            reqId,
+            status_code: resp.status_code,
+            has_more: (resp.data as any)?.has_more,
+            next_cursor: (resp.data as any)?.next_cursor,
+            count: Array.isArray((resp.data as any)?.messages) ? (resp.data as any).messages.length : 0,
+          });
           handler(resp);
         }
       });
@@ -498,11 +536,12 @@ export default function Chat() {
     ws.connect()
       .then(() => {
         setStatus('connected');
+        logWs('connected');
         // Resolve active agent id for this conversation (single-agent UI)
         const s = createSdk(cfg);
         s.api
           .agent()
-          .then((a) => setActiveAgentId(a.agent_id))
+          .then((a) => { setActiveAgentId(a.agent_id); logWs('agent resolved', { agent_id: a.agent_id }); })
           .catch((e: any) => {
             if (e?.auth_error === 'token_expired' || e?.auth_error === 'invalid_token') {
               try { tokenStore.clear(); } catch {}
@@ -529,9 +568,19 @@ export default function Chat() {
       .catch((_e: any) => {
         // Do not force logout on server unavailability; ws client will auto-reconnect
         setStatus('disconnected');
+        logWs('connect failed');
       });
 
     const offNew = ws.on('new_message', (evt: any) => {
+      logWs('event new_message', {
+        message: evt?.data?.message ? {
+          role: evt.data.message.role,
+          created_at: evt.data.message.created_at,
+          name: evt.data.message.name,
+          has_images: Array.isArray(evt.data.message.images) && evt.data.message.images.length > 0,
+          content_preview: typeof evt.data.message.content === 'string' ? String(evt.data.message.content).slice(0, 200) : undefined,
+        } : undefined,
+      });
       const m = evt?.data?.message;
       if (m && m.role === 'assistant') {
         // Remember when the latest assistant reply arrived
@@ -551,6 +600,7 @@ export default function Chat() {
       }
     });
     const offPrep = ws.on('agent_preparing', (evt: any) => {
+      logWs('event agent_preparing', { agent_id: evt?.data?.agent_id, ts_ms: evt?.data?.ts_ms });
       const agentId = evt?.data?.agent_id as number | undefined;
       const ts = (evt?.data?.ts_ms as number | undefined) ?? Date.now();
       // Guard: ignore stale events clearly older than the latest assistant reply (allow small drift)
@@ -560,14 +610,23 @@ export default function Chat() {
       }
     });
     const offNoReply = ws.on('agent_no_reply', (evt: any) => {
+      logWs('event agent_no_reply', { agent_id: evt?.data?.agent_id });
       const agentId = evt?.data?.agent_id as number | undefined;
       if (agentId != null) stopTyping(agentId);
+    });
+    const offNet = ws.on('net_error', (evt: any) => {
+      logWs('event net_error', { error: evt?.error });
+    });
+    const offAuth = ws.on('auth_error', (evt: any) => {
+      logWs('event auth_error', { error: evt?.error });
     });
     startedRef.current = true;
     return () => {
       offNew && offNew();
       offPrep && offPrep();
       offNoReply && offNoReply();
+      offNet && offNet();
+      offAuth && offAuth();
       // Clear any pending typing timers
       typingTimersRef.current.forEach((t) => clearTimeout(t));
       typingTimersRef.current.clear();
@@ -606,6 +665,7 @@ export default function Chat() {
     setContent('');
     try {
       const sdk = createSdk(cfg);
+      logWs('api sendMessage', { content_preview: toSend.slice(0, 200), length: toSend.length });
       await sdk.api.sendMessage(toSend);
     } catch (e: any) {
       if (e?.auth_error === 'token_expired' || e?.auth_error === 'invalid_token') {
