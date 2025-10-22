@@ -65,84 +65,186 @@ function extractImagesFromEvent(evt: any): string[] {
   return Array.from(new Set([...(imgs || []), ...fromText]));
 }
 
-type ContentBlock = { type: 'text'; text: string } | { type: 'gallery'; urls: string[]; count?: number };
+type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'gallery'; urls: string[]; count?: number }
+  | { type: 'link'; urls: string[] };
+
 function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrls: Set<string> } {
   const blocks: ContentBlock[] = [];
   const contentUrls = new Set<string>();
   if (!text) return { blocks, contentUrls };
-  const lines = text.split(/\r?\n/);
-  let gallery: string[] = [];
-  let galleryCount = 0; // for placeholder-based galleries
-  let paragraph: string[] = [];
-  let pendingBlanks = 0; // blank lines encountered while in gallery mode
-  const isUrlOnly = (s: string) => /^https?:\/\/\S+$/.test(s.trim());
-  const placeholderCount = (s: string) => {
-    const t = s.trim().toLowerCase();
-    if (!t) return 0;
-    // count words strictly equal to 'image'
-    return t.split(/\s+/).reduce((acc, w) => acc + (w === 'image' ? 1 : 0), 0);
+
+  // Helpers
+  const isAbsHttp = (u: string) => /^https?:\/\//i.test(u);
+  const extractFirstUrl = (s: string): string | null => {
+    const m = s.match(/https?:\/\/\S+/i);
+    return m && m[0] ? sanitizeUrl(m[0]) : null;
   };
-  const flushParagraph = () => {
-    if (paragraph.length) {
-      blocks.push({ type: 'text', text: paragraph.join('\n') });
-      paragraph = [];
+
+  // Convert a plain text segment into blocks with support for:
+  // - URL-only lines => gallery
+  // - placeholder word "image" => attachment placeholders
+  const pushFromPlainText = (segment: string, stripLeadingAfterGallery?: boolean) => {
+    if (!segment) return;
+    if (stripLeadingAfterGallery) {
+      // Ensure exactly one leading newline after a gallery
+      if (/^(?:[ \t]*\r?\n)+/.test(segment)) {
+        segment = segment.replace(/^(?:[ \t]*\r?\n)+/, '\n');
+      } else {
+        segment = '\n' + segment;
+      }
     }
-  };
-  const flushGallery = () => {
-    if (gallery.length) {
-      blocks.push({ type: 'gallery', urls: gallery });
-      gallery = [];
-    }
-    if (galleryCount > 0) {
-      blocks.push({ type: 'gallery', urls: [], count: galleryCount });
-      galleryCount = 0;
-    }
-  };
-  for (const raw of lines) {
-    const line = raw; // keep original spacing for text
-    const trimmed = line.trim();
-    if (trimmed.length === 0) {
-      // If we are in gallery mode, keep blanks to insert before the next text paragraph
-      if (gallery.length > 0 || galleryCount > 0) {
-        pendingBlanks++;
+    const lines = segment.split(/\r?\n/);
+    let gallery: string[] = [];
+    let galleryCount = 0; // for placeholder-based galleries
+    let paragraph: string[] = [];
+    let pendingBlanks = 0; // blank lines encountered while in gallery mode
+    const isUrlOnly = (s: string) => /^https?:\/\/\S+$/.test(s.trim());
+    const placeholderCount = (s: string) => {
+      const t = s.trim().toLowerCase();
+      if (!t) return 0;
+      // count words strictly equal to 'image'
+      return t.split(/\s+/).reduce((acc, w) => acc + (w === 'image' ? 1 : 0), 0);
+    };
+    const flushParagraph = () => {
+      if (paragraph.length) {
+        blocks.push({ type: 'text', text: paragraph.join('\n') });
+        paragraph = [];
+      }
+    };
+    const flushGallery = () => {
+      if (gallery.length) {
+        blocks.push({ type: 'gallery', urls: gallery });
+        gallery = [];
+      }
+      if (galleryCount > 0) {
+        blocks.push({ type: 'gallery', urls: [], count: galleryCount });
+        galleryCount = 0;
+      }
+    };
+    for (const raw of lines) {
+      const line = raw; // keep original spacing for text
+      const trimmed = line.trim();
+      if (trimmed.length === 0) {
+        // If we are in gallery mode, keep blanks to insert before the next text paragraph
+        if (gallery.length > 0 || galleryCount > 0) {
+          pendingBlanks++;
+          continue;
+        }
+        flushGallery();
+        paragraph.push('');
         continue;
       }
+      if (isUrlOnly(trimmed)) {
+        // URL-only line becomes part of a gallery
+        if (gallery.length === 0 && galleryCount === 0) flushParagraph();
+        const u = sanitizeUrl(trimmed);
+        gallery.push(u);
+        contentUrls.add(u);
+        continue;
+      }
+      const phc = placeholderCount(trimmed);
+      if (phc > 0) {
+        // If we're already accumulating a URL gallery, treat placeholder lines as spacing
+        if (gallery.length > 0) {
+          continue;
+        }
+        // Otherwise, use placeholders to create a gallery from attachments only.
+        if (gallery.length === 0 && galleryCount === 0) flushParagraph();
+        galleryCount += phc;
+        continue;
+      }
+      // non-URL line ends any gallery and is part of text
       flushGallery();
-      paragraph.push('');
-      continue;
-    }
-    if (isUrlOnly(trimmed)) {
-      // URL-only line becomes part of a gallery
-      if (gallery.length === 0 && galleryCount === 0) flushParagraph();
-      const u = sanitizeUrl(trimmed);
-      gallery.push(u);
-      contentUrls.add(u);
-      continue;
-    }
-    const phc = placeholderCount(trimmed);
-    if (phc > 0) {
-      // If we're already accumulating a URL gallery, treat placeholder lines as spacing
-      // so they do not split galleries or create duplicate placeholder galleries.
-      if (gallery.length > 0) {
-        continue;
+      // do not auto-insert a blank line after gallery; just reset counter
+      if (pendingBlanks > 0) {
+        pendingBlanks = 0;
       }
-      // Otherwise, use placeholders to create a gallery from attachments only.
-      if (gallery.length === 0 && galleryCount === 0) flushParagraph();
-      galleryCount += phc;
+      paragraph.push(line);
+    }
+    flushGallery();
+    // trailing blanks after gallery at EOF are not needed
+    flushParagraph();
+  };
+
+  // Tokenize by custom [link]...[/link] and [gallery]...[/gallery] markers
+  let i = 0;
+  const OPEN_LINK = '[link]';
+  const CLOSE_LINK = '[/link]';
+  const OPEN_GALLERY = '[gallery]';
+  const CLOSE_GALLERY = '[/gallery]';
+
+  let prevWasGallery = false;
+  while (i < text.length) {
+    const nextLink = text.indexOf(OPEN_LINK, i);
+    const nextGallery = text.indexOf(OPEN_GALLERY, i);
+    let next = -1;
+    let kind: 'link' | 'gallery' | null = null;
+    if (nextLink >= 0 && (nextGallery < 0 || nextLink < nextGallery)) {
+      next = nextLink;
+      kind = 'link';
+    } else if (nextGallery >= 0) {
+      next = nextGallery;
+      kind = 'gallery';
+    }
+
+    if (next < 0 || !kind) {
+      // No more markers; push the rest as plain text
+      pushFromPlainText(text.slice(i), prevWasGallery);
+      prevWasGallery = false;
+      break;
+    }
+
+    // Push any preceding plain text
+    if (next > i) {
+      pushFromPlainText(text.slice(i, next), prevWasGallery);
+      prevWasGallery = false;
+    }
+
+    if (kind === 'link') {
+      const close = text.indexOf(CLOSE_LINK, next + OPEN_LINK.length);
+      if (close < 0) {
+        // Unclosed tag; treat as plain text
+        pushFromPlainText(text.slice(next));
+        break;
+      }
+      const inner = text.slice(next + OPEN_LINK.length, close);
+      const url = extractFirstUrl(inner);
+      if (url && isAbsHttp(url)) {
+        blocks.push({ type: 'link', urls: [url] });
+        contentUrls.add(url);
+      }
+      i = close + CLOSE_LINK.length;
+      prevWasGallery = false;
       continue;
     }
-    // non-URL line ends any gallery and is part of text
-    flushGallery();
-    // re-insert exactly one blank line after a gallery, regardless of how many were present
-    if (pendingBlanks > 0) {
-      paragraph.push('');
-      pendingBlanks = 0;
+
+    if (kind === 'gallery') {
+      const close = text.indexOf(CLOSE_GALLERY, next + OPEN_GALLERY.length);
+      if (close < 0) {
+        // Unclosed tag; treat as plain text
+        pushFromPlainText(text.slice(next));
+        break;
+      }
+      const inner = text.slice(next + OPEN_GALLERY.length, close);
+      const urls: string[] = [];
+      for (const raw of inner.split(/\r?\n/)) {
+        const u = raw.trim();
+        if (u && isAbsHttp(u)) {
+          const su = sanitizeUrl(u);
+          urls.push(su);
+          contentUrls.add(su);
+        }
+      }
+      if (urls.length) blocks.push({ type: 'gallery', urls });
+      i = close + CLOSE_GALLERY.length;
+      // Mark that a gallery just ended so we can strip a single leading blank line
+      prevWasGallery = urls.length > 0;
+      continue;
     }
-    paragraph.push(line);
   }
-  flushGallery();
-  // trailing blanks after gallery at EOF are not needed
-  flushParagraph();
+
   return { blocks, contentUrls };
 }
 
@@ -598,45 +700,47 @@ export default function Chat() {
                   {(() => {
                     return blocks.map((b, bi) => {
                       if (b.type === 'text') return <div key={bi}>{b.text}</div>;
+                      if (b.type === 'link') {
+                        const url = (b.urls && b.urls[0]) || '';
+                        if (!url) return <div key={bi} />;
+                        return (
+                          <div key={bi}>
+                            <a href={url} target="_blank" rel="noreferrer" className="underline">
+                              {url}
+                            </a>
+                          </div>
+                        );
+                      }
+                      // gallery
                       let urls = b.urls || [];
-                      if ((!urls || urls.length === 0) && b.count && b.count > 0) {
-                        urls = attachmentsPending.splice(0, b.count);
+                      if ((!urls || urls.length === 0) && (b as any).count && (b as any).count > 0) {
+                        urls = attachmentsPending.splice(0, (b as any).count);
                       }
                       if (!urls || urls.length === 0) return <div key={bi} />;
                       return (
                         <div key={bi}>
-                          {/* Show the original links first, then the gallery */}
-                          <div className="whitespace-pre-wrap">
-                            {urls.map((src, li) => (
-                              <div key={li}>
-                                <a href={src} target="_blank" rel="noreferrer" className="underline">
-                                  {src}
-                                </a>
-                              </div>
-                            ))}
-                          </div>
-                          <div className="mt-2 grid grid-cols-2 gap-2">
+                          <div className="grid grid-cols-2 gap-2">
                             {urls.map((src, i) => {
-                          let globalIdx = (m.images || []).indexOf(src);
-                          const openLb = (e: React.MouseEvent) => {
-                            e.preventDefault();
-                            setMessages((prev) => {
-                              // Ensure this URL exists in the message images for lightbox navigation
-                              const next = prev.slice();
-                              const item: ChatItem = { ...(next[idx] as ChatItem) };
-                              const imgs = item.images ? item.images.slice() : [];
-                              let gi = imgs.indexOf(src);
-                              if (gi < 0) {
-                                imgs.push(src);
-                                gi = imgs.length - 1;
-                              }
-                              item.images = imgs;
-                              next[idx] = item;
-                              // set lightbox after state update
-                              setTimeout(() => setLightbox({ msgIdx: idx, imgIdx: gi }), 0);
-                              return next as ChatItem[];
-                            });
-                          };
+                              let globalIdx = (m.images || []).indexOf(src);
+                              const openLb = (e: React.MouseEvent) => {
+                                e.preventDefault();
+                                setMessages((prev) => {
+                                  // Ensure this URL exists in the message images for lightbox navigation
+                                  const next = prev.slice();
+                                  const item: ChatItem = { ...(next[idx] as ChatItem) };
+                                  const imgs = item.images ? item.images.slice() : [];
+                                  let gi = imgs.indexOf(src);
+                                  if (gi < 0) {
+                                    imgs.push(src);
+                                    gi = imgs.length - 1;
+                                  }
+                                  item.images = imgs;
+                                  next[idx] = item;
+                                  // set lightbox after state update
+                                  setTimeout(() => setLightbox({ msgIdx: idx, imgIdx: gi }), 0);
+                                  return next as ChatItem[];
+                                });
+                              };
                               return (
                                 <a key={i} href={src} target="_blank" rel="noreferrer" onClick={openLb}>
                                   <img
