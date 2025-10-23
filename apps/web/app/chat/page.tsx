@@ -53,11 +53,6 @@ function extractImageUrls(text?: string): string[] {
   while ((m = imgExt.exec(text)) !== null) {
     if (m[1]) urls.add(sanitizeUrl(m[1] as string));
   }
-  // Generic URLs (may point to images without file extensions); we'll try to render and hide on error
-  const generic = /(https?:\/\/[^\s]+)/gi;
-  while ((m = generic.exec(text)) !== null) {
-    if (m[1]) urls.add(sanitizeUrl(m[1] as string));
-  }
   return Array.from(urls);
 }
 
@@ -75,7 +70,7 @@ function extractImagesFromEvent(evt: any): string[] {
 
 type ContentBlock =
   | { type: 'text'; text: string }
-  | { type: 'gallery'; urls: string[]; count?: number }
+  | { type: 'gallery'; urls: string[] }
   | { type: 'link'; urls: string[] };
 
 function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrls: Set<string> } {
@@ -89,10 +84,10 @@ function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrl
     const m = s.match(/https?:\/\/\S+/i);
     return m && m[0] ? sanitizeUrl(m[0]) : null;
   };
+  // Note: gallery rendering is only driven by explicit [gallery] blocks.
 
   // Convert a plain text segment into blocks with support for:
-  // - URL-only lines => gallery
-  // - placeholder word "image" => attachment placeholders
+  // - URL-only lines => link blocks
   const pushFromPlainText = (segment: string, stripLeadingAfterGallery?: boolean) => {
     if (!segment) return;
     if (stripLeadingAfterGallery) {
@@ -104,75 +99,31 @@ function parseContentBlocks(text?: string): { blocks: ContentBlock[]; contentUrl
       }
     }
     const lines = segment.split(/\r?\n/);
-    let gallery: string[] = [];
-    let galleryCount = 0; // for placeholder-based galleries
     let paragraph: string[] = [];
-    let pendingBlanks = 0; // blank lines encountered while in gallery mode
     const isUrlOnly = (s: string) => /^https?:\/\/\S+$/.test(s.trim());
-    const placeholderCount = (s: string) => {
-      const t = s.trim().toLowerCase();
-      if (!t) return 0;
-      // count words strictly equal to 'image'
-      return t.split(/\s+/).reduce((acc, w) => acc + (w === 'image' ? 1 : 0), 0);
-    };
     const flushParagraph = () => {
       if (paragraph.length) {
         blocks.push({ type: 'text', text: paragraph.join('\n') });
         paragraph = [];
       }
     };
-    const flushGallery = () => {
-      if (gallery.length) {
-        blocks.push({ type: 'gallery', urls: gallery });
-        gallery = [];
-      }
-      if (galleryCount > 0) {
-        blocks.push({ type: 'gallery', urls: [], count: galleryCount });
-        galleryCount = 0;
-      }
-    };
     for (const raw of lines) {
       const line = raw; // keep original spacing for text
       const trimmed = line.trim();
       if (trimmed.length === 0) {
-        // If we are in gallery mode, keep blanks to insert before the next text paragraph
-        if (gallery.length > 0 || galleryCount > 0) {
-          pendingBlanks++;
-          continue;
-        }
-        flushGallery();
         paragraph.push('');
         continue;
       }
       if (isUrlOnly(trimmed)) {
-        // URL-only line becomes part of a gallery
-        if (gallery.length === 0 && galleryCount === 0) flushParagraph();
         const u = sanitizeUrl(trimmed);
-        gallery.push(u);
+        // Always render URL-only lines as link blocks (no implicit galleries)
+        flushParagraph();
+        blocks.push({ type: 'link', urls: [u] });
         contentUrls.add(u);
         continue;
       }
-      const phc = placeholderCount(trimmed);
-      if (phc > 0) {
-        // If we're already accumulating a URL gallery, treat placeholder lines as spacing
-        if (gallery.length > 0) {
-          continue;
-        }
-        // Otherwise, use placeholders to create a gallery from attachments only.
-        if (gallery.length === 0 && galleryCount === 0) flushParagraph();
-        galleryCount += phc;
-        continue;
-      }
-      // non-URL line ends any gallery and is part of text
-      flushGallery();
-      // do not auto-insert a blank line after gallery; just reset counter
-      if (pendingBlanks > 0) {
-        pendingBlanks = 0;
-      }
       paragraph.push(line);
     }
-    flushGallery();
-    // trailing blanks after gallery at EOF are not needed
     flushParagraph();
   };
 
@@ -286,8 +237,31 @@ export default function Chat() {
   const [lightbox, setLightbox] = useState<{ msgIdx: number; imgIdx: number } | null>(null);
   // Menu state (header)
   const [menuOpen, setMenuOpen] = useState(false);
-  
+
   // Helper: stable message key
+
+  // Helper: turn raw text into React nodes with clickable links
+  const linkify = (text: string) => {
+    const nodes: (string | JSX.Element)[] = [];
+    const re = /https?:\/\/\S+/gi;
+    let last = 0;
+    let i = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const start = m.index;
+      const raw = m[0];
+      if (start > last) nodes.push(text.slice(last, start));
+      const href = sanitizeUrl(raw);
+      nodes.push(
+        <a key={`lnk-${i++}`} href={href} target="_blank" rel="noreferrer" className="underline">
+          {href}
+        </a>
+      );
+      last = start + raw.length;
+    }
+    if (last < text.length) nodes.push(text.slice(last));
+    return nodes;
+  };
 
   // Load older messages (one page) when near top
   const loadOlder = () => {
@@ -742,8 +716,8 @@ export default function Chat() {
           const allContentUrls = new Set<string>([...contentUrls, ...inlineUrls]);
           // Treat URLs equal after sanitization to avoid minor punctuation differences
           const attachments = (m.images || []).filter((u) => !allContentUrls.has(sanitizeUrl(u)));
-          // Clone attachments to allow placeholder galleries to consume from this list
-          // so we don't render them again at the end.
+          // Clone attachments so block rendering can consume from this list
+          // without mutating the original message data.
           let attachmentsPending = attachments.slice();
           return (
             <div key={`${messageKey(m)}#${idx}`} className={isUser ? 'flex justify-end' : 'flex justify-start'}>
@@ -759,7 +733,7 @@ export default function Chat() {
                 <div className="[&>a]:underline whitespace-pre-wrap">
                   {(() => {
                     return blocks.map((b, bi) => {
-                      if (b.type === 'text') return <div key={bi}>{b.text}</div>;
+                      if (b.type === 'text') return <div key={bi}>{linkify(b.text)}</div>;
                       if (b.type === 'link') {
                         const url = (b.urls && b.urls[0]) || '';
                         if (!url) return <div key={bi} />;
@@ -772,10 +746,7 @@ export default function Chat() {
                         );
                       }
                       // gallery
-                      let urls = b.urls || [];
-                      if ((!urls || urls.length === 0) && (b as any).count && (b as any).count > 0) {
-                        urls = attachmentsPending.splice(0, (b as any).count);
-                      }
+                      const urls = b.urls || [];
                       if (!urls || urls.length === 0) return <div key={bi} />;
                       return (
                         <div key={bi}>
@@ -848,57 +819,6 @@ export default function Chat() {
             </div>
           );
         })}
-        {lightbox && (() => {
-          const imgs = messages[lightbox.msgIdx]?.images || [];
-          const src = imgs[lightbox.imgIdx];
-          if (!src) return null;
-          const close = () => setLightbox(null);
-          const next = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx + 1) % imgs.length });
-          const prev = () => setLightbox({ msgIdx: lightbox.msgIdx, imgIdx: (lightbox.imgIdx - 1 + imgs.length) % imgs.length });
-          return (
-            <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4" onClick={close} role="dialog" aria-modal="true">
-              <div className="relative max-w-[95vw] max-h-[90vh]">
-                <img
-                  src={src}
-                  alt="image"
-                  className="max-w-[95vw] max-h-[90vh] object-contain rounded-md"
-                  onClick={(e) => e.stopPropagation()}
-                  referrerPolicy="no-referrer"
-                />
-                <button
-                  onClick={(e) => { e.stopPropagation(); close(); }}
-                  className="absolute top-2 right-2 rounded-md bg-black/60 text-white px-2 py-1 text-sm"
-                  aria-label="Close"
-                >
-                  ✕
-                </button>
-                {imgs.length > 1 && (
-                  <>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); prev(); }}
-                      className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
-                      aria-label="Previous"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); next(); }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/60 text-white w-10 h-10 flex items-center justify-center"
-                      aria-label="Next"
-                    >
-                      ›
-                    </button>
-                  </>
-                )}
-                <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-white/80 text-xs">
-                  {lightbox.imgIdx + 1} / {imgs.length}
-                  {' '}
-                  <a href={src} target="_blank" rel="noreferrer" className="underline ml-2">Open</a>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
         {lightbox && (() => {
           const imgs = messages[lightbox.msgIdx]?.images || [];
           const src = imgs[lightbox.imgIdx];
